@@ -568,7 +568,7 @@ def rule_matches(rule, msg):
 
 def apply_rules(message_id):
     msg = db.row("SELECT * FROM messages WHERE id=?", (message_id,))
-    rules = db.rows("SELECT r.*,u.email user_email FROM rules r LEFT JOIN users u ON u.id=r.target_user_id WHERE r.active=1 AND (r.mailbox_id IS NULL OR r.mailbox_id=?) ORDER BY r.priority,r.id", (msg["mailbox_id"],))
+    rules = db.rows("SELECT r.*,u.email user_email FROM rules r LEFT JOIN users u ON u.id=r.target_user_id WHERE r.active=1 AND r.mailbox_id=? ORDER BY r.priority,r.id", (msg["mailbox_id"],))
     for rule in rules:
         if not rule_matches(rule, msg):
             continue

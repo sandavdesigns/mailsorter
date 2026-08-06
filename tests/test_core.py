@@ -186,7 +186,7 @@ class SecurityTests(unittest.TestCase):
 
     def test_automatic_rule_only_logs_in_test_mode(self):
         message = {"id": 7, "mailbox_id": 2, "sender": "billing@example.org", "recipients": "inbox@example.org", "subject": "Rechnung", "text_body": "Test"}
-        rule = {"id": 3, "mailbox_id": None, "field": "subject", "operator": "contains", "value": "Rechnung", "action": "forward", "target_email": "team@example.org", "user_email": None, "target_folder": None, "post_forward_folder": "INBOX/Archiv", "stop_processing": 1}
+        rule = {"id": 3, "mailbox_id": 2, "field": "subject", "operator": "contains", "value": "Rechnung", "action": "forward", "target_email": "team@example.org", "user_email": None, "target_folder": None, "post_forward_folder": "INBOX/Archiv", "stop_processing": 1}
         with mock.patch.dict(os.environ, {"TEST_MODE": "true"}, clear=False), \
              mock.patch.object(exchange.db, "row", return_value=message), \
              mock.patch.object(exchange.db, "rows", return_value=[rule]), \
@@ -400,13 +400,34 @@ class SecurityTests(unittest.TestCase):
             self.assertEqual(updated["stop_processing"], 0)
             self.assertIsNotNone(db.row("SELECT * FROM audit_log WHERE action='rule_updated'"))
 
-    def test_forward_archive_rule_requires_a_specific_mailbox(self):
+    def test_rule_requires_a_specific_mailbox(self):
         payload = {
-            "name": "Global mit Archiv", "field": "subject", "operator": "contains", "value": "Rechnung",
+            "name": "Ohne Postfach", "field": "subject", "operator": "contains", "value": "Rechnung",
             "action": "forward", "target_email": "team@example.org", "post_forward_folder": "INBOX/Archiv",
         }
-        with self.assertRaisesRegex(Exception, "Archivierung"):
+        with self.assertRaisesRegex(Exception, "Postfach"):
             main.normalized_rule(payload)
+
+    def test_rules_export_and_import_are_mailbox_scoped(self):
+        with tempfile.TemporaryDirectory() as temp_dir, \
+             mock.patch.object(db, "DATA_DIR", Path(temp_dir)), \
+             mock.patch.object(db, "DB_PATH", Path(temp_dir) / "test.sqlite3"):
+            db.init_db()
+            mailbox_id = db.execute("""INSERT INTO mailboxes(name,email,imap_host,smtp_host,username,password_enc,folder,active,created_at)
+              VALUES(?,?,?,?,?,?,?,?,?)""", ("Zentrale", "zentrale@example.org", "imap", "smtp", "svc", "encrypted", "INBOX", 1, db.now_iso()))
+            db.execute("""INSERT INTO rules(name,mailbox_id,field,operator,value,value_logic,action,target_email,priority,active,stop_processing,created_at)
+              VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""", ("Rechnung", mailbox_id, "subject", "contains", "Rechnung", "any", "forward", "team@example.org", 100, 1, 1, db.now_iso()))
+            db.execute("""INSERT INTO rules(name,mailbox_id,field,operator,value,action,target_email,priority,active,stop_processing,created_at)
+              VALUES(?,?,?,?,?,?,?,?,?,?,?)""", ("Alt global", None, "subject", "contains", "Alt", "forward", "team@example.org", 100, 1, 1, db.now_iso()))
+            with mock.patch.object(main, "require_user", return_value={"id": 1, "email": "admin@example.org", "role": "admin"}):
+                exported = main.export_rules(session=None)
+            self.assertEqual(len(exported["rules"]), 1)
+            self.assertEqual(exported["rules"][0]["mailbox_email"], "zentrale@example.org")
+            db.execute("DELETE FROM rules")
+            with mock.patch.object(main, "require_user", return_value={"id": 1, "email": "admin@example.org", "role": "admin"}):
+                imported = main.import_rules(exported, session=None)
+            self.assertEqual(imported["imported"], 1)
+            self.assertEqual(db.row("SELECT count(*) n FROM rules WHERE mailbox_id=?", (mailbox_id,))["n"], 1)
 
     def test_apply_saved_rule_to_existing_messages_is_dry_run_in_test_mode(self):
         with tempfile.TemporaryDirectory() as temp_dir, \

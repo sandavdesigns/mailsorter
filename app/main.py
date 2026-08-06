@@ -455,11 +455,73 @@ def add_user(payload: dict = Body(...), session: str | None = Cookie(None)):
 @app.get("/api/rules")
 def rules(session: str | None = Cookie(None)):
     user = require_user(session)
-    where = "1=1" if user.get("role") == "admin" or "id" not in user else "(r.mailbox_id IS NOT NULL AND r.mailbox_id IN (SELECT mailbox_id FROM mailbox_permissions WHERE user_id=?))"
+    where = "r.mailbox_id IS NOT NULL" if user.get("role") == "admin" or "id" not in user else "(r.mailbox_id IS NOT NULL AND r.mailbox_id IN (SELECT mailbox_id FROM mailbox_permissions WHERE user_id=?))"
     args = [] if user.get("role") == "admin" or "id" not in user else [user["id"]]
     return db.rows(f"""SELECT r.*,b.name mailbox_name,u.name target_name,u.email user_email FROM rules r
       LEFT JOIN mailboxes b ON b.id=r.mailbox_id LEFT JOIN users u ON u.id=r.target_user_id
       WHERE {where} ORDER BY r.priority,r.id""", args)
+
+
+RULE_IMPORT_FIELDS = ("name", "field", "operator", "value", "value_logic", "action", "target_email", "target_folder", "post_forward_folder", "priority", "stop_processing")
+
+
+def rule_export_row(rule):
+    return {
+        "name": rule["name"], "mailbox_email": rule["mailbox_email"], "mailbox_name": rule["mailbox_name"],
+        "field": rule["field"], "operator": rule["operator"], "value": rule["value"], "value_logic": rule.get("value_logic") or "any",
+        "action": rule["action"], "target_email": rule.get("target_email"), "target_folder": rule.get("target_folder"),
+        "post_forward_folder": rule.get("post_forward_folder"), "priority": rule["priority"],
+        "stop_processing": int(bool(rule["stop_processing"])), "active": int(bool(rule["active"])),
+    }
+
+
+@app.get("/api/rules/export")
+def export_rules(mailbox_id: int | None = None, session: str | None = Cookie(None)):
+    user = require_user(session)
+    where, args = ["r.mailbox_id IS NOT NULL"], []
+    if mailbox_id:
+        ensure_mailbox_access(user, mailbox_id)
+        where.append("r.mailbox_id=?"); args.append(mailbox_id)
+    elif user.get("role") != "admin" and "id" in user:
+        where.append("r.mailbox_id IN (SELECT mailbox_id FROM mailbox_permissions WHERE user_id=?)"); args.append(user["id"])
+    rows = db.rows(f"""SELECT r.*,b.email mailbox_email,b.name mailbox_name FROM rules r
+      JOIN mailboxes b ON b.id=r.mailbox_id WHERE {' AND '.join(where)} ORDER BY b.name,r.priority,r.id""", args)
+    db.audit("rules_exported", actor=user["email"], count=len(rows), mailbox_id=mailbox_id)
+    return {"version": 1, "exported_at": db.now_iso(), "rules": [rule_export_row(r) for r in rows]}
+
+
+@app.post("/api/rules/import")
+def import_rules(payload: dict = Body(...), session: str | None = Cookie(None)):
+    user = require_user(session)
+    items = payload.get("rules") if isinstance(payload, dict) else None
+    if not isinstance(items, list):
+        raise HTTPException(400, "Importdatei enthält keine Regeln")
+    target_mailbox_id = payload.get("mailbox_id") or None
+    if target_mailbox_id:
+        ensure_mailbox_access(user, int(target_mailbox_id))
+    imported, skipped = 0, 0
+    for item in items:
+        if not isinstance(item, dict):
+            skipped += 1; continue
+        mailbox_id = int(target_mailbox_id) if target_mailbox_id else None
+        if not mailbox_id:
+            mailbox_email = str(item.get("mailbox_email") or "").strip()
+            box = db.row("SELECT id FROM mailboxes WHERE lower(email)=lower(?) AND active=1", (mailbox_email,))
+            if not box:
+                skipped += 1; continue
+            mailbox_id = box["id"]
+            ensure_mailbox_access(user, mailbox_id)
+        rule_payload = {k: item.get(k) for k in RULE_IMPORT_FIELDS}
+        rule_payload["mailbox_id"] = mailbox_id
+        try:
+            rule = normalized_rule(rule_payload)
+        except HTTPException:
+            skipped += 1; continue
+        db.execute("""INSERT INTO rules(name,mailbox_id,field,operator,value,value_logic,action,target_user_id,target_email,target_folder,post_forward_folder,priority,active,stop_processing,created_at)
+          VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (rule["name"], rule["mailbox_id"], rule["field"], rule["operator"], rule["value"], rule["value_logic"], rule["action"], None, rule["target_email"], rule["target_folder"], rule["post_forward_folder"], rule["priority"], int(bool(item.get("active", 1))), rule["stop_processing"], db.now_iso()))
+        imported += 1
+    db.audit("rules_imported", actor=user["email"], imported=imported, skipped=skipped, target_mailbox_id=target_mailbox_id)
+    return {"ok": True, "imported": imported, "skipped": skipped}
 
 
 def validate_rule_condition(payload):
@@ -482,6 +544,7 @@ def normalized_rule(payload):
     target_email = str(payload.get("target_email") or "").strip() or None
     target_folder = str(payload.get("target_folder") or "").strip() or None
     post_forward_folder = str(payload.get("post_forward_folder") or "").strip() or None
+    if not mailbox_id: raise HTTPException(400, "Regeln müssen einem Postfach zugeordnet sein")
     if action == "forward" and not target_user_id and not target_email: raise HTTPException(400, "Weiterleitung benötigt ein Ziel")
     if action == "move" and (not mailbox_id or not target_folder): raise HTTPException(400, "Verschieben benötigt Postfach und Zielordner")
     if action == "forward" and post_forward_folder and not mailbox_id: raise HTTPException(400, "Archivierung nach Weiterleitung benötigt ein konkretes Postfach")
@@ -507,8 +570,8 @@ def preview_rule(payload: dict = Body(...), session: str | None = Cookie(None)):
     mailbox_id = payload.get("mailbox_id") or None
     if mailbox_id:
         ensure_mailbox_access(user, mailbox_id)
-    elif user.get("role") != "admin" and "id" in user:
-        raise HTTPException(403, "Globale Regeltests sind nur für Administratoren verfügbar")
+    else:
+        raise HTTPException(400, "Regeltest benötigt ein Postfach")
     access, access_args = mailbox_filter(user, "m")
     messages = db.rows("""SELECT m.id,m.mailbox_id,m.sender,m.recipients,m.subject,m.received_at,
       m.text_body,m.status,b.name mailbox_name FROM messages m JOIN mailboxes b ON b.id=m.mailbox_id
@@ -528,7 +591,7 @@ def simulate_rules(mailbox_id: int | None = None, session: str | None = Cookie(N
     messages = db.rows("""SELECT m.id,m.mailbox_id,m.sender,m.recipients,m.subject,m.received_at,
       m.text_body,m.status,b.name mailbox_name FROM messages m JOIN mailboxes b ON b.id=m.mailbox_id
       WHERE (? IS NULL OR m.mailbox_id=?) AND """ + access + " ORDER BY m.received_at DESC LIMIT 2000", (mailbox_id, mailbox_id, *access_args))
-    rule_where = "r.active=1" if user.get("role") == "admin" or "id" not in user else "r.active=1 AND r.mailbox_id IS NOT NULL AND r.mailbox_id IN (SELECT mailbox_id FROM mailbox_permissions WHERE user_id=?)"
+    rule_where = "r.active=1 AND r.mailbox_id IS NOT NULL" if user.get("role") == "admin" or "id" not in user else "r.active=1 AND r.mailbox_id IS NOT NULL AND r.mailbox_id IN (SELECT mailbox_id FROM mailbox_permissions WHERE user_id=?)"
     rule_args = [] if user.get("role") == "admin" or "id" not in user else [user["id"]]
     ruleset = db.rows("""SELECT r.*,u.name target_name,u.email user_email FROM rules r
       LEFT JOIN users u ON u.id=r.target_user_id WHERE """ + rule_where + " ORDER BY r.priority,r.id", rule_args)
@@ -575,10 +638,9 @@ def apply_rule_to_existing(rule_id: int, session: str | None = Cookie(None)):
       LEFT JOIN users u ON u.id=r.target_user_id WHERE r.id=?""", (rule_id,))
     if not rule: raise HTTPException(404, "Regel nicht gefunden")
     if not rule["active"]: raise HTTPException(409, "Nur aktive Regeln können angewendet werden")
-    if rule["mailbox_id"] is None and user.get("role") != "admin" and "id" in user:
-        raise HTTPException(403, "Globale Regeln können nur Administratoren anwenden")
-    if rule["mailbox_id"] is not None:
-        ensure_mailbox_access(user, rule["mailbox_id"])
+    if rule["mailbox_id"] is None:
+        raise HTTPException(400, "Diese alte globale Regel kann nicht mehr angewendet werden")
+    ensure_mailbox_access(user, rule["mailbox_id"])
     access, access_args = mailbox_filter(user, "m")
     messages = db.rows("""SELECT m.id,m.mailbox_id,m.sender,m.recipients,m.subject,m.received_at,
       m.text_body,m.status,m.matched_rule_id,b.name mailbox_name FROM messages m JOIN mailboxes b ON b.id=m.mailbox_id
@@ -614,10 +676,7 @@ def apply_rule_to_existing(rule_id: int, session: str | None = Cookie(None)):
 def add_rule(payload: dict = Body(...), session: str | None = Cookie(None)):
     user = require_user(session)
     rule = normalized_rule(payload)
-    if rule["mailbox_id"] is None and user.get("role") != "admin" and "id" in user:
-        raise HTTPException(403, "Globale Regeln können nur Administratoren erstellen")
-    if rule["mailbox_id"] is not None:
-        ensure_mailbox_access(user, rule["mailbox_id"])
+    ensure_mailbox_access(user, rule["mailbox_id"])
     rule_id = db.execute("""INSERT INTO rules(name,mailbox_id,field,operator,value,value_logic,action,target_user_id,target_email,target_folder,post_forward_folder,priority,active,stop_processing,created_at)
       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,1,?,?)""", (rule["name"], rule["mailbox_id"], rule["field"], rule["operator"], rule["value"], rule["value_logic"], rule["action"], rule["target_user_id"], rule["target_email"], rule["target_folder"], rule["post_forward_folder"], rule["priority"], rule["stop_processing"], db.now_iso()))
     db.audit("rule_created", actor=user["email"], rule_id=rule_id, name=rule["name"])
@@ -629,19 +688,15 @@ def update_rule(rule_id: int, payload: dict = Body(...), session: str | None = C
     user = require_user(session)
     current = db.row("SELECT * FROM rules WHERE id=?", (rule_id,))
     if not current: raise HTTPException(404, "Regel nicht gefunden")
-    if current["mailbox_id"] is None and user.get("role") != "admin" and "id" in user:
-        raise HTTPException(403, "Globale Regeln können nur Administratoren bearbeiten")
+    was_global = current["mailbox_id"] is None
     if current["mailbox_id"] is not None:
         ensure_mailbox_access(user, current["mailbox_id"])
     rule = normalized_rule(payload)
-    if rule["mailbox_id"] is None and user.get("role") != "admin" and "id" in user:
-        raise HTTPException(403, "Globale Regeln können nur Administratoren erstellen")
-    if rule["mailbox_id"] is not None:
-        ensure_mailbox_access(user, rule["mailbox_id"])
+    ensure_mailbox_access(user, rule["mailbox_id"])
     active = int(bool(payload.get("active", current["active"])))
     db.execute("""UPDATE rules SET name=?,mailbox_id=?,field=?,operator=?,value=?,value_logic=?,action=?,target_user_id=?,target_email=?,target_folder=?,post_forward_folder=?,priority=?,active=?,stop_processing=? WHERE id=?""",
       (rule["name"], rule["mailbox_id"], rule["field"], rule["operator"], rule["value"], rule["value_logic"], rule["action"], rule["target_user_id"], rule["target_email"], rule["target_folder"], rule["post_forward_folder"], rule["priority"], active, rule["stop_processing"], rule_id))
-    db.audit("rule_updated", actor=user["email"], rule_id=rule_id, name=rule["name"], rule_action=rule["action"], post_forward_folder=rule["post_forward_folder"], active=bool(active))
+    db.audit("rule_updated", actor=user["email"], rule_id=rule_id, name=rule["name"], rule_action=rule["action"], post_forward_folder=rule["post_forward_folder"], active=bool(active), converted_global=was_global)
     return {"ok": True, "id": rule_id}
 
 
@@ -650,8 +705,6 @@ def disable_rule(rule_id: int, session: str | None = Cookie(None)):
     user = require_user(session)
     rule = db.row("SELECT id,mailbox_id FROM rules WHERE id=?", (rule_id,))
     if not rule: raise HTTPException(404, "Regel nicht gefunden")
-    if rule["mailbox_id"] is None and user.get("role") != "admin" and "id" in user:
-        raise HTTPException(403, "Globale Regeln können nur Administratoren deaktivieren")
     if rule["mailbox_id"] is not None:
         ensure_mailbox_access(user, rule["mailbox_id"])
     db.execute("UPDATE rules SET active=0 WHERE id=?", (rule_id,))
