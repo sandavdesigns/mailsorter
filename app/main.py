@@ -17,6 +17,7 @@ from .exchange import create_folder, fetch_mailbox, forward_message, list_folder
 from .security import decrypt, encrypt, hash_password, new_session, token_hash, verify_password
 
 STATIC = Path(__file__).parent / "static"
+VERSION_FILE = Path(__file__).parent.parent / "VERSION"
 stop_event = threading.Event()
 
 
@@ -37,8 +38,13 @@ def asset_version():
 
 
 def app_version():
-    value = os.getenv("APP_VERSION") or "dev"
-    return value[:12]
+    value = os.getenv("APP_VERSION")
+    if not value:
+        try:
+            value = VERSION_FILE.read_text(encoding="utf-8").strip()
+        except OSError:
+            value = "dev"
+    return value
 
 
 def bootstrap_admin():
@@ -83,7 +89,7 @@ async def lifespan(app):
     stop_event.set()
 
 
-app = FastAPI(title="Mailsorter", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="Mailsorter", version=app_version().lstrip("v"), lifespan=lifespan)
 app.mount("/static", NoCacheStaticFiles(directory=STATIC), name="static")
 
 

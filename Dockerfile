@@ -6,12 +6,13 @@ LABEL org.opencontainers.image.source="https://github.com/sandavdesigns/mailsort
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     APP_DATA_DIR=/data
-ARG APP_VERSION=dev
+ARG APP_VERSION=v0.2.0
 ENV APP_VERSION=${APP_VERSION}
 
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+COPY VERSION .
 COPY app ./app
 RUN mkdir -p /data && useradd --system --uid 10001 mailsorter && chown -R mailsorter:mailsorter /data
 USER mailsorter
