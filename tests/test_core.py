@@ -8,7 +8,7 @@ from unittest import mock
 os.environ.setdefault("APP_SECRET", "test-secret-with-at-least-24-characters")
 
 from app import db, exchange, main
-from app.exchange import apply_rules, authenticate_imap_ntlm, clean_html, connect_imap_with_password, connection_error, decoded, forward_message, imap_tls_channel_bindings, message_bodies, move_message, rule_matches, test_mailbox_connection, test_mode_enabled
+from app.exchange import apply_rules, authenticate_imap_ntlm, clean_html, connect_imap_with_password, connection_error, decoded, forward_message, imap_tls_channel_bindings, message_attachments, message_bodies, move_message, rule_matches, test_mailbox_connection, test_mode_enabled
 from app.security import decrypt, encrypt, hash_password, verify_password
 
 
@@ -54,6 +54,27 @@ class SecurityTests(unittest.TestCase):
         self.assertIn('data-external-src="https://example.org/tracker.png"', html)
         self.assertNotIn('<img src="https://example.org', html)
 
+    def test_regular_attachments_are_listed_but_inline_images_are_not(self):
+        msg = email.message.EmailMessage()
+        msg.set_content("Text")
+        msg.add_alternative('<img src="cid:logo">', subtype="html")
+        msg.get_payload()[-1].add_related(b"png-data", maintype="image", subtype="png", cid="<logo>", filename="logo.png", disposition="inline")
+        msg.add_attachment(b"pdf-data", maintype="application", subtype="pdf", filename="../Prüfung.pdf")
+        attachments = message_attachments(msg)
+        self.assertEqual(len(attachments), 1)
+        self.assertEqual(attachments[0]["filename"], "Prüfung.pdf")
+        self.assertEqual(attachments[0]["content_type"], "application/pdf")
+        self.assertEqual(attachments[0]["content"], b"pdf-data")
+
+    def test_oversized_attachment_is_visible_but_not_stored(self):
+        msg = email.message.EmailMessage()
+        msg.set_content("Text")
+        msg.add_attachment(b"x" * (1024 * 1024 + 1), maintype="application", subtype="octet-stream", filename="gross.bin")
+        with mock.patch.dict(os.environ, {"MAX_ATTACHMENT_MB": "1"}):
+            attachment = message_attachments(msg)[0]
+        self.assertEqual(attachment["stored"], 0)
+        self.assertIsNone(attachment["content"])
+
     def test_test_mode_is_fail_safe_and_blocks_external_actions(self):
         with mock.patch.dict(os.environ, {}, clear=True):
             self.assertTrue(test_mode_enabled())
@@ -93,6 +114,37 @@ class SecurityTests(unittest.TestCase):
             imap_class.return_value.login.assert_called_once_with("imap-svc", "secret")
             smtp_class.return_value.login.assert_called_once_with("smtp-svc", "secret")
             self.assertFalse(smtp_class.return_value.send_message.called)
+
+    def test_forwarded_message_keeps_stored_attachments(self):
+        message = {
+            "id": 7, "email": "shared@example.org", "sender": "from@example.org", "recipients": "shared@example.org",
+            "subject": "Unterlagen", "text_body": "Text", "html_body": "<p>Text</p>", "password_enc": "encrypted",
+            "smtp_mode": "starttls", "smtp_host": "smtp.example.org", "smtp_port": 587,
+            "smtp_username": "svc@example.org", "username": "svc@example.org", "mailbox_id": 2,
+        }
+        attachment = {"filename": "Prüfung.pdf", "content_type": "application/pdf", "size": 8, "stored": 1, "content": b"pdf-data"}
+        smtp = mock.MagicMock()
+        with mock.patch.object(exchange, "test_mode_enabled", return_value=False), \
+             mock.patch.object(exchange.db, "row", return_value=message), \
+             mock.patch.object(exchange.db, "rows", return_value=[attachment]), \
+             mock.patch.object(exchange.db, "execute"), mock.patch.object(exchange.db, "audit"), \
+             mock.patch.object(exchange, "decrypt", return_value="secret"), \
+             mock.patch.object(exchange.smtplib, "SMTP", return_value=smtp):
+            forward_message(7, "target@example.org", "test")
+        sent = smtp.send_message.call_args.args[0]
+        sent_attachments = list(sent.iter_attachments())
+        self.assertEqual(len(sent_attachments), 1)
+        self.assertEqual(sent_attachments[0].get_filename(), "Prüfung.pdf")
+        self.assertEqual(sent_attachments[0].get_payload(decode=True), b"pdf-data")
+
+    def test_attachment_download_is_forced_and_nosniff(self):
+        attachment = {"id": 1, "filename": "Prüfung.pdf", "content_type": "application/pdf", "stored": 1, "content": b"pdf-data"}
+        with mock.patch.object(main, "require_user"), mock.patch.object(db, "row", return_value=attachment):
+            response = main.download_attachment(1, session=None)
+        self.assertEqual(response.body, b"pdf-data")
+        self.assertEqual(response.headers["x-content-type-options"], "nosniff")
+        self.assertTrue(response.headers["content-disposition"].startswith("attachment;"))
+        self.assertIn("filename*=UTF-8''Pr%C3%BCfung.pdf", response.headers["content-disposition"])
 
     def test_exchange_errors_include_actionable_hints(self):
         smtp_hint = connection_error(Exception("[SSL: WRONG_VERSION_NUMBER] wrong version number"), "smtp", {"smtp_port": 587})
@@ -136,6 +188,8 @@ class SecurityTests(unittest.TestCase):
               VALUES(?,?,?,?,?,?)""", (mailbox_id, "1", "a@example.org", "b@example.org", "Test", db.now_iso()))
             db.execute("""INSERT INTO rules(name,mailbox_id,field,operator,value,created_at) VALUES(?,?,?,?,?,?)""",
                        ("Postfachregel", mailbox_id, "subject", "contains", "Test", db.now_iso()))
+            db.execute("""INSERT INTO attachments(message_id,filename,content_type,size,stored,content,created_at)
+              VALUES(?,?,?,?,?,?,?)""", (message_id, "test.pdf", "application/pdf", 3, 1, b"pdf", db.now_iso()))
             db.audit("message_received", mailbox_id=mailbox_id, message_id=message_id)
 
             with mock.patch.object(main, "require_admin", return_value={"email": "admin@example.org"}):
@@ -144,9 +198,11 @@ class SecurityTests(unittest.TestCase):
 
             self.assertTrue(result["ok"])
             self.assertEqual(details["messages_deleted"], 1)
+            self.assertEqual(details["attachments_deleted"], 1)
             self.assertEqual(details["rules_deleted"], 1)
             self.assertEqual(db.rows("SELECT * FROM mailboxes"), [])
             self.assertEqual(db.rows("SELECT * FROM messages"), [])
+            self.assertEqual(db.rows("SELECT * FROM attachments"), [])
             self.assertEqual(db.rows("SELECT * FROM rules"), [])
             deletion = db.row("SELECT * FROM audit_log WHERE action='mailbox_deleted'")
             self.assertIsNotNone(deletion)

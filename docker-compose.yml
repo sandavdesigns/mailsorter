@@ -11,6 +11,8 @@ services:
       TEST_MODE: ${TEST_MODE:-true}
       SESSION_HTTPS_ONLY: ${SESSION_HTTPS_ONLY:-false}
       POLL_INTERVAL_SECONDS: ${POLL_INTERVAL_SECONDS:-60}
+      MAX_ATTACHMENT_MB: ${MAX_ATTACHMENT_MB:-50}
+      MAX_MESSAGE_ATTACHMENTS_MB: ${MAX_MESSAGE_ATTACHMENTS_MB:-100}
       TZ: ${TZ:-Europe/Berlin}
     volumes:
       - mailsorter_data:/data

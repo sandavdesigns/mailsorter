@@ -19,7 +19,7 @@ from spnego.channel_bindings import GssChannelBindings
 from . import db
 from .security import decrypt
 
-MESSAGE_PARSER_VERSION = 2
+MESSAGE_PARSER_VERSION = 3
 MAX_INLINE_IMAGE_BYTES = 5 * 1024 * 1024
 MAX_INLINE_IMAGES_BYTES = 12 * 1024 * 1024
 SAFE_INLINE_IMAGE_TYPES = {"image/png", "image/jpeg", "image/gif", "image/webp", "image/bmp"}
@@ -113,6 +113,55 @@ def embed_inline_images(value, msg):
         return sources.get(match.group(1).strip().strip("<>").lower(), match.group(0))
 
     return re.sub(r"cid:([^\s\"'<>]+)", replace, value or "", flags=re.I)
+
+
+def attachment_limit(name, default_mb):
+    try:
+        return max(1, min(500, int(os.getenv(name, str(default_mb))))) * 1024 * 1024
+    except ValueError:
+        return default_mb * 1024 * 1024
+
+
+def safe_attachment_filename(value):
+    name = decoded(value or "Anlage")
+    name = re.sub(r"[\x00-\x1f\x7f]+", "", name).replace("\\", "/").rsplit("/", 1)[-1].strip()
+    return (name or "Anlage")[:240]
+
+
+def message_attachments(msg):
+    result, stored_total = [], 0
+    max_file = attachment_limit("MAX_ATTACHMENT_MB", 50)
+    max_total = attachment_limit("MAX_MESSAGE_ATTACHMENTS_MB", 100)
+    for part in msg.walk():
+        if part.is_multipart():
+            continue
+        disposition = part.get_content_disposition()
+        raw_filename = part.get_filename()
+        if disposition != "attachment" and not (raw_filename and disposition != "inline"):
+            continue
+        payload = part.get_payload(decode=True) or b""
+        size = len(payload)
+        stored = size <= max_file and stored_total + size <= max_total
+        if stored:
+            stored_total += size
+        content_type = part.get_content_type().lower()
+        if not re.fullmatch(r"[a-z0-9!#$&^_.+-]+/[a-z0-9!#$&^_.+-]+", content_type):
+            content_type = "application/octet-stream"
+        result.append({
+            "filename": safe_attachment_filename(raw_filename), "content_type": content_type,
+            "size": size, "stored": int(stored), "content": payload if stored else None,
+        })
+    return result
+
+
+def store_message_attachments(message_id, msg):
+    db.execute("DELETE FROM attachments WHERE message_id=?", (message_id,))
+    attachments = message_attachments(msg)
+    for attachment in attachments:
+        db.execute("""INSERT INTO attachments(message_id,filename,content_type,size,stored,content,created_at)
+          VALUES(?,?,?,?,?,?,?)""", (message_id, attachment["filename"], attachment["content_type"],
+          attachment["size"], attachment["stored"], attachment["content"], db.now_iso()))
+    return attachments
 
 
 def message_bodies(msg):
@@ -351,14 +400,17 @@ def fetch_mailbox(box):
             if existing:
                 db.execute("""UPDATE messages SET message_id=?,sender=?,recipients=?,subject=?,received_at=?,text_body=?,html_body=?,parser_version=? WHERE id=?""",
                            (*values, MESSAGE_PARSER_VERSION, existing["id"]))
-                db.audit("message_rendering_refreshed", mailbox_id=box["id"], message_id=existing["id"])
+                attachments = store_message_attachments(existing["id"], msg)
+                db.audit("message_rendering_refreshed", mailbox_id=box["id"], message_id=existing["id"], attachments=len(attachments))
                 continue
             message_id = db.execute("""
               INSERT OR IGNORE INTO messages(mailbox_id,uid,message_id,sender,recipients,subject,received_at,text_body,html_body,parser_version,created_at)
               VALUES(?,?,?,?,?,?,?,?,?,?,?)
             """, (box["id"], uid, *values, MESSAGE_PARSER_VERSION, db.now_iso()))
             if message_id:
-                db.audit("message_received", mailbox_id=box["id"], message_id=message_id, subject=decoded(msg.get("Subject")))
+                attachments = store_message_attachments(message_id, msg)
+                db.audit("message_received", mailbox_id=box["id"], message_id=message_id,
+                         subject=decoded(msg.get("Subject")), attachments=len(attachments))
                 apply_rules(message_id)
                 count += 1
         db.execute("UPDATE mailboxes SET last_sync_at=?,last_error=NULL WHERE id=?", (db.now_iso(), box["id"]))
@@ -417,6 +469,13 @@ def forward_message(message_id, target, actor, rule_id=None, user_id=None):
     outgoing["Subject"] = "WG: " + msg["subject"]
     outgoing.set_content(f"Automatisch weitergeleitete Nachricht\n\nVon: {msg['sender']}\nAn: {msg['recipients']}\nBetreff: {msg['subject']}\n\n{msg['text_body']}")
     outgoing.add_alternative(f"<p><strong>Automatisch weitergeleitete Nachricht</strong></p><p>Von: {bleach.clean(msg['sender'])}<br>An: {bleach.clean(msg['recipients'])}<br>Betreff: {bleach.clean(msg['subject'])}</p><hr>{msg['html_body']}", subtype="html")
+    attachments = db.rows("SELECT filename,content_type,size,stored,content FROM attachments WHERE message_id=? ORDER BY id", (message_id,))
+    missing = [a["filename"] for a in attachments if not a["stored"]]
+    if missing:
+        raise RuntimeError("Weiterleitung gestoppt: Anlage wurde wegen des Größenlimits nicht gespeichert: " + ", ".join(missing))
+    for attachment in attachments:
+        maintype, subtype = attachment["content_type"].split("/", 1)
+        outgoing.add_attachment(attachment["content"] or b"", maintype=maintype, subtype=subtype, filename=attachment["filename"])
     password = decrypt(msg["password_enc"])
     if msg["smtp_mode"] == "ssl":
         smtp = smtplib.SMTP_SSL(msg["smtp_host"], msg["smtp_port"], context=ssl.create_default_context(), timeout=30)

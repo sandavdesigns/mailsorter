@@ -11,3 +11,33 @@
   color: #725500;
   font-size: 12px;
 }
+
+.attachments {
+  margin: 0 0 14px;
+  padding: 12px;
+  border: 1px solid #dfe4ec;
+  border-radius: 9px;
+  background: #f8fafc;
+}
+
+.attachments > strong { display: block; margin-bottom: 8px; }
+.attachments > div { display: grid; gap: 7px; }
+
+.attachment {
+  display: grid;
+  grid-template-columns: 26px minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  padding: 9px 10px;
+  border: 1px solid #e1e6ee;
+  border-radius: 8px;
+  background: #fff;
+  color: #172033;
+  text-decoration: none;
+}
+
+.attachment:hover { border-color: #315cf3; background: #f6f8ff; }
+.attachment b, .attachment small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.attachment small { color: #718096; font-size: 11px; }
+.attachment > span:last-child { color: #315cf3; font-size: 12px; font-weight: 700; }
+.attachment.unavailable { grid-template-columns: 26px minmax(0, 1fr); color: #8a3540; }

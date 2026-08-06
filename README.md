@@ -10,6 +10,7 @@ Mailsorter ist eine browserbasierte Verteilstelle für gemeinsame Firmenpostfäc
 - zentrale Inbox mit Suche, Status und Postfachfilter
 - Outlook-nahe, bereinigte HTML-Vorschau mit korrekten Zeichensätzen und eingebetteten Bildern
 - externe Mailbilder werden zum Schutz vor Tracking erst nach einem bewussten Klick geladen
+- Anlagenleiste mit Dateiname, Typ, Größe und sicherem Download; gespeicherte Anlagen werden beim Weiterleiten übernommen
 - manuelle Weiterleitung an interne Benutzer oder freie E-Mail-Adressen
 - manuelles Verschieben in vorhandene Exchange-Unterordner
 - Regeln auf Absender, Empfänger, Betreff oder Mailinhalt
@@ -46,7 +47,7 @@ Wichtig: `APP_SECRET` nach dem ersten Start nicht ändern. Damit werden die Post
    - `MAILSORTER_PORT`: freier Port auf dem Docker-Host, beispielsweise `8081`
    - `TEST_MODE=true`: sichere Voreinstellung für Einrichtung und Regeltests
    - `SESSION_HTTPS_ONLY=true`, sobald der Zugriff über HTTPS erfolgt
-   - optional `POLL_INTERVAL_SECONDS=60` und `TZ=Europe/Berlin`
+   - optional `POLL_INTERVAL_SECONDS=60`, `MAX_ATTACHMENT_MB=50`, `MAX_MESSAGE_ATTACHMENTS_MB=100` und `TZ=Europe/Berlin`
 4. Stack deployen und den mit `MAILSORTER_PORT` festgelegten TCP-Port zum Reverse Proxy freigeben. Der interne Container-Port bleibt immer 8080.
 5. Für Produktion TLS am Reverse Proxy terminieren und `SESSION_HTTPS_ONLY=true` setzen.
 
@@ -61,6 +62,7 @@ Erst nach der Abnahme in Portainer `TEST_MODE=false` setzen und den Stack neu de
 Falls Portainer beim ersten Abruf `denied` meldet, muss das Container-Paket auf GitHub einmalig unter **Packages → mailsorter → Package settings → Change visibility → Public** öffentlich gesetzt werden. Alternativ kann die GHCR-Registry mit einem GitHub-Token in Portainer hinterlegt werden.
 
 Das Volume `mailsorter_data` enthält Datenbank, Regeln, Audit-Log und verschlüsselte Zugangsdaten. Es muss in das Backup aufgenommen werden. Das `APP_SECRET` separat sichern.
+Gespeicherte Mailanlagen liegen ebenfalls in dieser Datenbank und vergrößern deshalb das Volume. Anlagen oberhalb der konfigurierten Einzel- oder Gesamtnachrichtengrenze werden sichtbar protokolliert, aber nicht gespeichert oder unvollständig weitergeleitet.
 
 ## Exchange On-Premises vorbereiten
 

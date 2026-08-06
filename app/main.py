@@ -1,10 +1,12 @@
 import json
 import os
+import re
 import threading
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import quote
 
 from fastapi import Body, Cookie, FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse, HTMLResponse
@@ -153,7 +155,26 @@ def message(message_id: int, session: str | None = Cookie(None)):
     result = db.row("""SELECT m.*,b.name mailbox_name,u.name assigned_name FROM messages m
       JOIN mailboxes b ON b.id=m.mailbox_id LEFT JOIN users u ON u.id=m.assigned_to WHERE m.id=?""", (message_id,))
     if not result: raise HTTPException(404, "Mail nicht gefunden")
+    result["attachments"] = db.rows("""SELECT id,filename,content_type,size,stored FROM attachments
+      WHERE message_id=? ORDER BY id""", (message_id,))
     return result
+
+
+@app.get("/api/attachments/{attachment_id}/download")
+def download_attachment(attachment_id: int, session: str | None = Cookie(None)):
+    require_user(session)
+    attachment = db.row("""SELECT a.* FROM attachments a JOIN messages m ON m.id=a.message_id
+      WHERE a.id=?""", (attachment_id,))
+    if not attachment: raise HTTPException(404, "Anlage nicht gefunden")
+    if not attachment["stored"] or attachment["content"] is None:
+        raise HTTPException(409, "Anlage überschreitet das konfigurierte Speicherlimit und kann nicht heruntergeladen werden")
+    filename = attachment["filename"]
+    fallback = re.sub(r'[^A-Za-z0-9._ -]+', '_', filename).strip() or "attachment"
+    disposition = f"attachment; filename=\"{fallback}\"; filename*=UTF-8''{quote(filename)}"
+    return Response(
+        content=attachment["content"], media_type=attachment["content_type"],
+        headers={"Content-Disposition": disposition, "X-Content-Type-Options": "nosniff", "Cache-Control": "private, no-store"},
+    )
 
 
 @app.post("/api/messages/{message_id}/assign")
@@ -199,6 +220,7 @@ def mailboxes(session: str | None = Cookie(None)):
     return db.rows("""SELECT b.id,b.name,b.email,b.imap_host,b.imap_port,b.smtp_host,b.smtp_port,b.username,
       b.imap_username,b.smtp_username,b.imap_auth_mode,b.imap_ssl,b.smtp_mode,b.folder,b.active,b.last_sync_at,
       b.last_error,b.created_at,(SELECT count(*) FROM messages m WHERE m.mailbox_id=b.id) message_count,
+      (SELECT count(*) FROM attachments a JOIN messages m ON m.id=a.message_id WHERE m.mailbox_id=b.id) attachment_count,
       (SELECT count(*) FROM rules r WHERE r.mailbox_id=b.id) rule_count FROM mailboxes b ORDER BY b.name""")
 
 

@@ -52,10 +52,16 @@ def init_db():
           id INTEGER PRIMARY KEY, mailbox_id INTEGER NOT NULL REFERENCES mailboxes(id) ON DELETE CASCADE,
           uid TEXT NOT NULL, message_id TEXT, sender TEXT NOT NULL, recipients TEXT NOT NULL,
           subject TEXT NOT NULL, received_at TEXT, text_body TEXT NOT NULL DEFAULT '',
-          html_body TEXT NOT NULL DEFAULT '', parser_version INTEGER NOT NULL DEFAULT 2,
+          html_body TEXT NOT NULL DEFAULT '', parser_version INTEGER NOT NULL DEFAULT 3,
           status TEXT NOT NULL DEFAULT 'new',
           assigned_to INTEGER REFERENCES users(id), matched_rule_id INTEGER,
           created_at TEXT NOT NULL, UNIQUE(mailbox_id, uid)
+        );
+        CREATE TABLE IF NOT EXISTS attachments (
+          id INTEGER PRIMARY KEY, message_id INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+          filename TEXT NOT NULL, content_type TEXT NOT NULL DEFAULT 'application/octet-stream',
+          size INTEGER NOT NULL DEFAULT 0, stored INTEGER NOT NULL DEFAULT 1,
+          content BLOB, created_at TEXT NOT NULL
         );
         CREATE TABLE IF NOT EXISTS rules (
           id INTEGER PRIMARY KEY, name TEXT NOT NULL, mailbox_id INTEGER REFERENCES mailboxes(id) ON DELETE CASCADE,
@@ -76,6 +82,7 @@ def init_db():
           expires_at TEXT NOT NULL, created_at TEXT NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_messages_status ON messages(status, received_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_attachments_message ON attachments(message_id);
         CREATE INDEX IF NOT EXISTS idx_rules_order ON rules(active, priority, id);
         CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_log(created_at DESC);
         """)
@@ -132,8 +139,11 @@ def purge_mailbox(mailbox_id, actor):
         if mailbox["active"]:
             raise ValueError("Postfach muss vor dem Löschen deaktiviert werden")
         message_count = con.execute("SELECT count(*) FROM messages WHERE mailbox_id=?", (mailbox_id,)).fetchone()[0]
+        attachment_count = con.execute("""SELECT count(*) FROM attachments a JOIN messages m ON m.id=a.message_id
+          WHERE m.mailbox_id=?""", (mailbox_id,)).fetchone()[0]
         rule_count = con.execute("SELECT count(*) FROM rules WHERE mailbox_id=?", (mailbox_id,)).fetchone()[0]
-        details = {"name": mailbox["name"], "email": mailbox["email"], "messages_deleted": message_count, "rules_deleted": rule_count}
+        details = {"name": mailbox["name"], "email": mailbox["email"], "messages_deleted": message_count,
+                   "attachments_deleted": attachment_count, "rules_deleted": rule_count}
         con.execute(
             "INSERT INTO audit_log(mailbox_id,actor,action,details,created_at) VALUES(?,?,?,?,?)",
             (mailbox_id, actor, "mailbox_deleted", json.dumps(details, ensure_ascii=False), now_iso()),
