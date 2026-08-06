@@ -1,0 +1,104 @@
+body[data-view="inbox"] .workspace {
+  padding-top: 16px;
+  padding-bottom: 16px;
+}
+
+body[data-view="inbox"] .workspace > header {
+  margin-bottom: 10px;
+}
+
+body[data-view="inbox"] .workspace h1 {
+  font-size: 21px;
+}
+
+body[data-view="inbox"] .workspace header p {
+  margin-top: 1px;
+  font-size: 12px;
+}
+
+body[data-view="inbox"] #primaryAction {
+  padding: 8px 12px;
+}
+
+body[data-view="inbox"] .stats {
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+body[data-view="inbox"] .stat {
+  border-radius: 10px;
+  padding: 9px 12px;
+}
+
+body[data-view="inbox"] .stat span {
+  font-size: 11px;
+}
+
+body[data-view="inbox"] .stat strong {
+  font-size: 19px;
+  margin-top: 0;
+}
+
+body[data-view="inbox"] .toolbar {
+  padding: 8px 10px;
+}
+
+body[data-view="inbox"] .toolbar input,
+body[data-view="inbox"] .toolbar select {
+  padding: 8px 10px;
+}
+
+body[data-view="inbox"] .mail-layout {
+  min-height: calc(100vh - 178px);
+}
+
+body[data-view="inbox"] .mail-list {
+  max-height: calc(100vh - 178px);
+}
+
+body[data-view="inbox"] .mail-item {
+  padding: 11px 14px;
+}
+
+body[data-view="inbox"] .mail-detail {
+  padding: 16px;
+}
+
+body[data-view="inbox"] .detail-head {
+  padding-bottom: 10px;
+}
+
+body[data-view="inbox"] .detail-head h2 {
+  font-size: 18px;
+  margin: 6px 0;
+}
+
+body[data-view="inbox"] .detail-actions {
+  margin: 10px 0;
+}
+
+body[data-view="inbox"] .detail-actions button,
+body[data-view="inbox"] #backMail {
+  padding: 7px 10px;
+}
+
+body[data-view="inbox"] .mail-frame {
+  height: calc(100vh - 330px);
+  min-height: 500px;
+}
+
+@media (max-width: 900px) {
+  body[data-view="inbox"] .workspace {
+    padding-top: 12px;
+  }
+
+  body[data-view="inbox"] .mail-layout,
+  body[data-view="inbox"] .mail-list {
+    min-height: calc(100vh - 210px);
+    max-height: none;
+  }
+
+  body[data-view="inbox"] .mail-detail.open {
+    padding: 14px;
+  }
+}
