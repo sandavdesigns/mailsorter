@@ -6,6 +6,7 @@ Mailsorter ist eine browserbasierte Verteilstelle für gemeinsame Firmenpostfäc
 
 - mehrere gemeinsame Postfächer mit getrennten Zugangsdaten und Ordnerstrukturen
 - Postfächer nachträglich bearbeiten und IMAP/SMTP-Verbindungen ohne Mailversand testen
+- Postfächer zuerst deaktivieren und anschließend samt lokal importierter Mails und zugehöriger Regeln löschen
 - zentrale Inbox mit Suche, Status und Postfachfilter
 - Outlook-nahe, bereinigte HTML-Vorschau mit korrekten Zeichensätzen und eingebetteten Bildern
 - externe Mailbilder werden zum Schutz vor Tracking erst nach einem bewussten Klick geladen

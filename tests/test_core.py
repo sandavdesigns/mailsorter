@@ -1,11 +1,13 @@
 import email
 import os
+import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
 os.environ.setdefault("APP_SECRET", "test-secret-with-at-least-24-characters")
 
-from app import exchange
+from app import db, exchange, main
 from app.exchange import apply_rules, authenticate_imap_ntlm, clean_html, connect_imap_with_password, connection_error, decoded, forward_message, imap_tls_channel_bindings, message_bodies, move_message, rule_matches, test_mailbox_connection, test_mode_enabled
 from app.security import decrypt, encrypt, hash_password, verify_password
 
@@ -122,6 +124,34 @@ class SecurityTests(unittest.TestCase):
         with mock.patch.object(exchange.x509, "load_der_x509_certificate", return_value=certificate):
             binding = imap_tls_channel_bindings(client)
         self.assertEqual(binding.application_data, b"tls-server-end-point:" + exchange.hashlib.sha256(b"certificate").digest())
+
+    def test_purge_mailbox_removes_local_messages_and_rules_but_keeps_audit(self):
+        with tempfile.TemporaryDirectory() as temp_dir, \
+             mock.patch.object(db, "DATA_DIR", Path(temp_dir)), \
+             mock.patch.object(db, "DB_PATH", Path(temp_dir) / "test.sqlite3"):
+            db.init_db()
+            mailbox_id = db.execute("""INSERT INTO mailboxes(name,email,imap_host,smtp_host,username,password_enc,folder,active,created_at)
+              VALUES(?,?,?,?,?,?,?,?,?)""", ("Alt", "alt@example.org", "imap", "smtp", "svc", "encrypted", "INBOX", 0, db.now_iso()))
+            message_id = db.execute("""INSERT INTO messages(mailbox_id,uid,sender,recipients,subject,created_at)
+              VALUES(?,?,?,?,?,?)""", (mailbox_id, "1", "a@example.org", "b@example.org", "Test", db.now_iso()))
+            db.execute("""INSERT INTO rules(name,mailbox_id,field,operator,value,created_at) VALUES(?,?,?,?,?,?)""",
+                       ("Postfachregel", mailbox_id, "subject", "contains", "Test", db.now_iso()))
+            db.audit("message_received", mailbox_id=mailbox_id, message_id=message_id)
+
+            with mock.patch.object(main, "require_admin", return_value={"email": "admin@example.org"}):
+                result = main.delete_mailbox(mailbox_id, session=None)
+            details = result
+
+            self.assertTrue(result["ok"])
+            self.assertEqual(details["messages_deleted"], 1)
+            self.assertEqual(details["rules_deleted"], 1)
+            self.assertEqual(db.rows("SELECT * FROM mailboxes"), [])
+            self.assertEqual(db.rows("SELECT * FROM messages"), [])
+            self.assertEqual(db.rows("SELECT * FROM rules"), [])
+            deletion = db.row("SELECT * FROM audit_log WHERE action='mailbox_deleted'")
+            self.assertIsNotNone(deletion)
+            self.assertIsNone(deletion["mailbox_id"])
+            self.assertTrue(db.row("SELECT * FROM audit_log WHERE action='message_received'"))
 
     def test_imap_auto_falls_back_to_ntlm(self):
         settings = {"imap_host": "exchange.example.org", "imap_port": 993, "imap_ssl": True, "imap_username": "DOMAIN\\svc", "username": "DOMAIN\\svc", "imap_auth_mode": "auto"}

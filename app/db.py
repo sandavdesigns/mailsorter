@@ -121,3 +121,22 @@ def audit(action, actor="system", message_id=None, mailbox_id=None, **details):
         "INSERT INTO audit_log(message_id,mailbox_id,actor,action,details,created_at) VALUES(?,?,?,?,?,?)",
         (message_id, mailbox_id, actor, action, json.dumps(details, ensure_ascii=False), now_iso()),
     )
+
+
+def purge_mailbox(mailbox_id, actor):
+    """Permanently remove one local mailbox and its dependent data, preserving an audit record."""
+    with connect() as con:
+        mailbox = con.execute("SELECT id,name,email,active FROM mailboxes WHERE id=?", (mailbox_id,)).fetchone()
+        if not mailbox:
+            return None
+        if mailbox["active"]:
+            raise ValueError("Postfach muss vor dem Löschen deaktiviert werden")
+        message_count = con.execute("SELECT count(*) FROM messages WHERE mailbox_id=?", (mailbox_id,)).fetchone()[0]
+        rule_count = con.execute("SELECT count(*) FROM rules WHERE mailbox_id=?", (mailbox_id,)).fetchone()[0]
+        details = {"name": mailbox["name"], "email": mailbox["email"], "messages_deleted": message_count, "rules_deleted": rule_count}
+        con.execute(
+            "INSERT INTO audit_log(mailbox_id,actor,action,details,created_at) VALUES(?,?,?,?,?)",
+            (mailbox_id, actor, "mailbox_deleted", json.dumps(details, ensure_ascii=False), now_iso()),
+        )
+        con.execute("DELETE FROM mailboxes WHERE id=?", (mailbox_id,))
+        return details

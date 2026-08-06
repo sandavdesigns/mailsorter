@@ -196,7 +196,10 @@ def move(message_id: int, payload: dict = Body(...), session: str | None = Cooki
 @app.get("/api/mailboxes")
 def mailboxes(session: str | None = Cookie(None)):
     require_user(session)
-    return db.rows("SELECT id,name,email,imap_host,imap_port,smtp_host,smtp_port,username,imap_username,smtp_username,imap_auth_mode,imap_ssl,smtp_mode,folder,active,last_sync_at,last_error,created_at FROM mailboxes ORDER BY name")
+    return db.rows("""SELECT b.id,b.name,b.email,b.imap_host,b.imap_port,b.smtp_host,b.smtp_port,b.username,
+      b.imap_username,b.smtp_username,b.imap_auth_mode,b.imap_ssl,b.smtp_mode,b.folder,b.active,b.last_sync_at,
+      b.last_error,b.created_at,(SELECT count(*) FROM messages m WHERE m.mailbox_id=b.id) message_count,
+      (SELECT count(*) FROM rules r WHERE r.mailbox_id=b.id) rule_count FROM mailboxes b ORDER BY b.name""")
 
 
 @app.post("/api/mailboxes")
@@ -276,9 +279,21 @@ def mailbox_folders(mailbox_id: int, session: str | None = Cookie(None)):
 @app.delete("/api/mailboxes/{mailbox_id}")
 def disable_mailbox(mailbox_id: int, session: str | None = Cookie(None)):
     user = require_admin(session)
+    box = db.row("SELECT id,name FROM mailboxes WHERE id=?", (mailbox_id,))
+    if not box: raise HTTPException(404, "Postfach nicht gefunden")
     db.execute("UPDATE mailboxes SET active=0 WHERE id=?", (mailbox_id,))
-    db.audit("mailbox_disabled", actor=user["email"], mailbox_id=mailbox_id)
+    db.audit("mailbox_disabled", actor=user["email"], mailbox_id=mailbox_id, name=box["name"])
     return {"ok": True}
+
+
+@app.delete("/api/mailboxes/{mailbox_id}/purge")
+def delete_mailbox(mailbox_id: int, session: str | None = Cookie(None)):
+    user = require_admin(session)
+    box = db.row("SELECT id,name,active FROM mailboxes WHERE id=?", (mailbox_id,))
+    if not box: raise HTTPException(404, "Postfach nicht gefunden")
+    if box["active"]: raise HTTPException(409, "Postfach zuerst deaktivieren, danach kann es endgültig gelöscht werden")
+    details = db.purge_mailbox(mailbox_id, user["email"])
+    return {"ok": True, **details}
 
 
 @app.get("/api/users")
