@@ -123,6 +123,19 @@ def ensure_mailbox_access(user, mailbox_id):
         raise HTTPException(403, "Kein Zugriff auf dieses Postfach")
 
 
+def normalized_contact(payload):
+    name = str(payload.get("name") or "").strip()
+    email = str(payload.get("email") or "").strip()
+    color = str(payload.get("color") or "#315cf3").strip()
+    if not name or not email:
+        raise HTTPException(400, "Name und E-Mail sind erforderlich")
+    if "@" not in email or len(email) > 254:
+        raise HTTPException(400, "Ungültige Kontakt-E-Mail")
+    if not re.fullmatch(r"#[0-9a-fA-F]{6}", color):
+        raise HTTPException(400, "Farbe muss ein HEX-Wert sein, z. B. #315cf3")
+    return {"name": name, "email": email, "color": color.lower()}
+
+
 @app.get("/", response_class=HTMLResponse)
 def index():
     html = (STATIC / "index.html").read_text(encoding="utf-8").replace("__ASSET_VERSION__", asset_version())
@@ -265,7 +278,13 @@ def assign(message_id: int, payload: dict = Body(...), session: str | None = Coo
     if payload.get("user_id"):
         target_user = db.row("SELECT * FROM users WHERE id=? AND active=1", (int(payload["user_id"]),))
         if not target_user: raise HTTPException(400, "Zielbenutzer nicht gefunden")
-    target = (target_user or {}).get("email") or str(payload.get("email", ""))
+    target_contact = None
+    if payload.get("contact_id"):
+        target_contact = db.row("SELECT * FROM mailbox_contacts WHERE id=? AND mailbox_id=? AND active=1", (int(payload["contact_id"]), msg["mailbox_id"]))
+        if not target_contact: raise HTTPException(400, "Kontakt nicht gefunden")
+    target = ((target_user or {}).get("email") or (target_contact or {}).get("email") or str(payload.get("email", ""))).strip()
+    if not target:
+        raise HTTPException(400, "Weiterleitung benötigt ein Ziel")
     try:
         forward_message(message_id, target, user["email"], user_id=(target_user or {}).get("id"))
         archive_folder = str(payload.get("archive_folder") or "").strip()
@@ -311,7 +330,9 @@ def mailboxes(session: str | None = Cookie(None)):
       b.imap_username,b.smtp_username,b.imap_auth_mode,b.imap_ssl,b.smtp_mode,b.folder,b.active,b.last_sync_at,
       b.auto_sync,b.last_error,b.created_at,(SELECT count(*) FROM messages m WHERE m.mailbox_id=b.id) message_count,
       (SELECT count(*) FROM attachments a JOIN messages m ON m.id=a.message_id WHERE m.mailbox_id=b.id) attachment_count,
-      (SELECT count(*) FROM rules r WHERE r.mailbox_id=b.id) rule_count FROM mailboxes b WHERE {access} ORDER BY b.name""", args)
+      (SELECT count(*) FROM rules r WHERE r.mailbox_id=b.id) rule_count,
+      (SELECT count(*) FROM mailbox_contacts c WHERE c.mailbox_id=b.id AND c.active=1) contact_count
+      FROM mailboxes b WHERE {access} ORDER BY b.name""", args)
 
 
 @app.post("/api/mailboxes")
@@ -328,6 +349,59 @@ def add_mailbox(payload: dict = Body(...), session: str | None = Cookie(None)):
       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (payload["name"], payload["email"], payload["imap_host"], int(payload.get("imap_port",993)), payload["smtp_host"], int(payload.get("smtp_port",587)), imap_username, imap_username, smtp_username, auth_mode, encrypt(payload["password"]), int(bool(payload.get("imap_ssl",True))), payload.get("smtp_mode","starttls"), payload.get("folder","INBOX"), int(bool(payload.get("auto_sync", False))), db.now_iso()))
     db.audit("mailbox_created", actor=user["email"], mailbox_id=box_id, name=payload["name"])
     return {"id": box_id}
+
+
+@app.get("/api/mailboxes/{mailbox_id}/contacts")
+def mailbox_contacts(mailbox_id: int, session: str | None = Cookie(None)):
+    user = require_user(session)
+    ensure_mailbox_access(user, mailbox_id)
+    box = db.row("SELECT id FROM mailboxes WHERE id=?", (mailbox_id,))
+    if not box: raise HTTPException(404, "Postfach nicht gefunden")
+    return db.rows("""SELECT id,mailbox_id,name,email,color,active,created_at FROM mailbox_contacts
+      WHERE mailbox_id=? AND active=1 ORDER BY name,email""", (mailbox_id,))
+
+
+@app.post("/api/mailboxes/{mailbox_id}/contacts")
+def add_mailbox_contact(mailbox_id: int, payload: dict = Body(...), session: str | None = Cookie(None)):
+    user = require_user(session)
+    ensure_mailbox_access(user, mailbox_id)
+    box = db.row("SELECT id FROM mailboxes WHERE id=?", (mailbox_id,))
+    if not box: raise HTTPException(404, "Postfach nicht gefunden")
+    contact = normalized_contact(payload)
+    try:
+        contact_id = db.execute("""INSERT INTO mailbox_contacts(mailbox_id,name,email,color,created_at)
+          VALUES(?,?,?,?,?)""", (mailbox_id, contact["name"], contact["email"], contact["color"], db.now_iso()))
+    except Exception:
+        raise HTTPException(409, "Kontakt mit dieser E-Mail existiert für dieses Postfach bereits")
+    db.audit("mailbox_contact_created", actor=user["email"], mailbox_id=mailbox_id, contact_id=contact_id, name=contact["name"], email=contact["email"])
+    return {"id": contact_id}
+
+
+@app.put("/api/mailboxes/{mailbox_id}/contacts/{contact_id}")
+def update_mailbox_contact(mailbox_id: int, contact_id: int, payload: dict = Body(...), session: str | None = Cookie(None)):
+    user = require_user(session)
+    ensure_mailbox_access(user, mailbox_id)
+    current = db.row("SELECT id FROM mailbox_contacts WHERE id=? AND mailbox_id=?", (contact_id, mailbox_id))
+    if not current: raise HTTPException(404, "Kontakt nicht gefunden")
+    contact = normalized_contact(payload)
+    active = int(bool(payload.get("active", 1)))
+    try:
+        db.execute("UPDATE mailbox_contacts SET name=?,email=?,color=?,active=? WHERE id=? AND mailbox_id=?", (contact["name"], contact["email"], contact["color"], active, contact_id, mailbox_id))
+    except Exception:
+        raise HTTPException(409, "Kontakt mit dieser E-Mail existiert für dieses Postfach bereits")
+    db.audit("mailbox_contact_updated", actor=user["email"], mailbox_id=mailbox_id, contact_id=contact_id, name=contact["name"], email=contact["email"], active=bool(active))
+    return {"ok": True, "id": contact_id}
+
+
+@app.delete("/api/mailboxes/{mailbox_id}/contacts/{contact_id}")
+def disable_mailbox_contact(mailbox_id: int, contact_id: int, session: str | None = Cookie(None)):
+    user = require_user(session)
+    ensure_mailbox_access(user, mailbox_id)
+    current = db.row("SELECT id,name,email FROM mailbox_contacts WHERE id=? AND mailbox_id=?", (contact_id, mailbox_id))
+    if not current: raise HTTPException(404, "Kontakt nicht gefunden")
+    db.execute("UPDATE mailbox_contacts SET active=0 WHERE id=? AND mailbox_id=?", (contact_id, mailbox_id))
+    db.audit("mailbox_contact_disabled", actor=user["email"], mailbox_id=mailbox_id, contact_id=contact_id, name=current["name"], email=current["email"])
+    return {"ok": True}
 
 
 @app.get("/api/mailboxes/{mailbox_id}/permissions")

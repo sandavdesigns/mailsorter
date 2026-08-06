@@ -429,6 +429,64 @@ class SecurityTests(unittest.TestCase):
             self.assertEqual(imported["imported"], 1)
             self.assertEqual(db.row("SELECT count(*) n FROM rules WHERE mailbox_id=?", (mailbox_id,))["n"], 1)
 
+    def test_mailbox_contacts_can_be_managed_per_mailbox(self):
+        with tempfile.TemporaryDirectory() as temp_dir, \
+             mock.patch.object(db, "DATA_DIR", Path(temp_dir)), \
+             mock.patch.object(db, "DB_PATH", Path(temp_dir) / "test.sqlite3"):
+            db.init_db()
+            mailbox_id = db.execute("""INSERT INTO mailboxes(name,email,imap_host,smtp_host,username,password_enc,folder,active,created_at)
+              VALUES(?,?,?,?,?,?,?,?,?)""", ("Zentrale", "zentrale@example.org", "imap", "smtp", "svc", "encrypted", "INBOX", 1, db.now_iso()))
+            user = {"id": 1, "email": "editor@example.org", "role": "admin"}
+            with mock.patch.object(main, "require_user", return_value=user):
+                created = main.add_mailbox_contact(mailbox_id, {"name": "Buchhaltung", "email": "buchhaltung@example.org", "color": "#ff8800"}, session=None)
+                contacts = main.mailbox_contacts(mailbox_id, session=None)
+                updated = main.update_mailbox_contact(mailbox_id, created["id"], {"name": "Buchhaltung Team", "email": "rechnung@example.org", "color": "#0088ff"}, session=None)
+            self.assertEqual(len(contacts), 1)
+            self.assertEqual(contacts[0]["color"], "#ff8800")
+            self.assertTrue(updated["ok"])
+            row = db.row("SELECT * FROM mailbox_contacts WHERE id=?", (created["id"],))
+            self.assertEqual(row["name"], "Buchhaltung Team")
+            self.assertEqual(row["email"], "rechnung@example.org")
+            self.assertEqual(row["color"], "#0088ff")
+
+    def test_manual_forward_can_target_mailbox_contact(self):
+        with tempfile.TemporaryDirectory() as temp_dir, \
+             mock.patch.object(db, "DATA_DIR", Path(temp_dir)), \
+             mock.patch.object(db, "DB_PATH", Path(temp_dir) / "test.sqlite3"):
+            db.init_db()
+            mailbox_id = db.execute("""INSERT INTO mailboxes(name,email,imap_host,smtp_host,username,password_enc,folder,active,created_at)
+              VALUES(?,?,?,?,?,?,?,?,?)""", ("Zentrale", "zentrale@example.org", "imap", "smtp", "svc", "encrypted", "INBOX", 1, db.now_iso()))
+            message_id = db.execute("""INSERT INTO messages(mailbox_id,uid,sender,recipients,subject,created_at)
+              VALUES(?,?,?,?,?,?)""", (mailbox_id, "1", "sender@example.org", "zentrale@example.org", "Frage", db.now_iso()))
+            contact_id = db.execute("""INSERT INTO mailbox_contacts(mailbox_id,name,email,color,created_at)
+              VALUES(?,?,?,?,?)""", (mailbox_id, "Einkauf", "einkauf@example.org", "#00aa66", db.now_iso()))
+            with mock.patch.object(main, "require_user", return_value={"email": "editor@example.org"}), \
+                 mock.patch.object(main, "test_mode_enabled", return_value=False), \
+                 mock.patch.object(main, "forward_message") as forward:
+                result = main.assign(message_id, {"contact_id": contact_id}, session=None)
+            self.assertTrue(result["ok"])
+            forward.assert_called_once_with(message_id, "einkauf@example.org", "editor@example.org", user_id=None)
+
+    def test_manual_forward_rejects_contact_from_other_mailbox(self):
+        with tempfile.TemporaryDirectory() as temp_dir, \
+             mock.patch.object(db, "DATA_DIR", Path(temp_dir)), \
+             mock.patch.object(db, "DB_PATH", Path(temp_dir) / "test.sqlite3"):
+            db.init_db()
+            mailbox_id = db.execute("""INSERT INTO mailboxes(name,email,imap_host,smtp_host,username,password_enc,folder,active,created_at)
+              VALUES(?,?,?,?,?,?,?,?,?)""", ("Zentrale", "zentrale@example.org", "imap", "smtp", "svc", "encrypted", "INBOX", 1, db.now_iso()))
+            other_id = db.execute("""INSERT INTO mailboxes(name,email,imap_host,smtp_host,username,password_enc,folder,active,created_at)
+              VALUES(?,?,?,?,?,?,?,?,?)""", ("Andere", "andere@example.org", "imap", "smtp", "svc", "encrypted", "INBOX", 1, db.now_iso()))
+            message_id = db.execute("""INSERT INTO messages(mailbox_id,uid,sender,recipients,subject,created_at)
+              VALUES(?,?,?,?,?,?)""", (mailbox_id, "1", "sender@example.org", "zentrale@example.org", "Frage", db.now_iso()))
+            contact_id = db.execute("""INSERT INTO mailbox_contacts(mailbox_id,name,email,color,created_at)
+              VALUES(?,?,?,?,?)""", (other_id, "Falsch", "falsch@example.org", "#00aa66", db.now_iso()))
+            with mock.patch.object(main, "require_user", return_value={"email": "editor@example.org"}), \
+                 mock.patch.object(main, "test_mode_enabled", return_value=False), \
+                 mock.patch.object(main, "forward_message") as forward:
+                with self.assertRaisesRegex(Exception, "Kontakt"):
+                    main.assign(message_id, {"contact_id": contact_id}, session=None)
+            forward.assert_not_called()
+
     def test_apply_saved_rule_to_existing_messages_is_dry_run_in_test_mode(self):
         with tempfile.TemporaryDirectory() as temp_dir, \
              mock.patch.object(db, "DATA_DIR", Path(temp_dir)), \

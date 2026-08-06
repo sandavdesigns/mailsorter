@@ -83,6 +83,16 @@ def init_db():
           created_at TEXT NOT NULL,
           PRIMARY KEY(mailbox_id,user_id)
         );
+        CREATE TABLE IF NOT EXISTS mailbox_contacts (
+          id INTEGER PRIMARY KEY,
+          mailbox_id INTEGER NOT NULL REFERENCES mailboxes(id) ON DELETE CASCADE,
+          name TEXT NOT NULL,
+          email TEXT NOT NULL,
+          color TEXT NOT NULL DEFAULT '#315cf3',
+          active INTEGER NOT NULL DEFAULT 1,
+          created_at TEXT NOT NULL,
+          UNIQUE(mailbox_id,email)
+        );
         CREATE TABLE IF NOT EXISTS audit_log (
           id INTEGER PRIMARY KEY, message_id INTEGER REFERENCES messages(id) ON DELETE SET NULL,
           mailbox_id INTEGER REFERENCES mailboxes(id) ON DELETE SET NULL,
@@ -97,6 +107,7 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_attachments_message ON attachments(message_id);
         CREATE INDEX IF NOT EXISTS idx_rules_order ON rules(active, priority, id);
         CREATE INDEX IF NOT EXISTS idx_mailbox_permissions_user ON mailbox_permissions(user_id, mailbox_id);
+        CREATE INDEX IF NOT EXISTS idx_mailbox_contacts_mailbox ON mailbox_contacts(mailbox_id, active, name);
         CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_log(created_at DESC);
         """)
         # Additive migrations for installations created by earlier versions.
@@ -171,8 +182,9 @@ def purge_mailbox(mailbox_id, actor):
         attachment_count = con.execute("""SELECT count(*) FROM attachments a JOIN messages m ON m.id=a.message_id
           WHERE m.mailbox_id=?""", (mailbox_id,)).fetchone()[0]
         rule_count = con.execute("SELECT count(*) FROM rules WHERE mailbox_id=?", (mailbox_id,)).fetchone()[0]
+        contact_count = con.execute("SELECT count(*) FROM mailbox_contacts WHERE mailbox_id=?", (mailbox_id,)).fetchone()[0]
         details = {"name": mailbox["name"], "email": mailbox["email"], "messages_deleted": message_count,
-                   "attachments_deleted": attachment_count, "rules_deleted": rule_count}
+                   "attachments_deleted": attachment_count, "rules_deleted": rule_count, "contacts_deleted": contact_count}
         con.execute(
             "INSERT INTO audit_log(mailbox_id,actor,action,details,created_at) VALUES(?,?,?,?,?)",
             (mailbox_id, actor, "mailbox_deleted", json.dumps(details, ensure_ascii=False), now_iso()),
