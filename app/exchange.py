@@ -61,8 +61,22 @@ def message_bodies(msg):
 
 def connect_imap(box):
     client = imaplib.IMAP4_SSL(box["imap_host"], box["imap_port"], ssl_context=ssl.create_default_context()) if box["imap_ssl"] else imaplib.IMAP4(box["imap_host"], box["imap_port"])
-    client.login(box["username"], decrypt(box["password_enc"]))
+    client.login(box.get("imap_username") or box["username"], decrypt(box["password_enc"]))
     return client
+
+
+def connection_error(exc, protocol, box):
+    raw = str(exc)
+    upper = raw.upper()
+    if protocol == "smtp" and "WRONG_VERSION_NUMBER" in upper:
+        if int(box.get("smtp_port", 0)) == 587:
+            return "Falscher TLS-Modus: Für Exchange-Port 587 STARTTLS wählen, nicht SSL/TLS."
+        return "TLS-Modus passt nicht zum SMTP-Port. Für 587 meist STARTTLS, für 465 meist SSL/TLS verwenden."
+    if "LOGIN FAILED" in upper or "AUTHENTICATIONFAILED" in upper or "AUTHENTICATION FAILED" in upper:
+        if protocol == "imap":
+            return "Exchange lehnt die IMAP-Anmeldung ab. UPN (benutzer@domain), DOMAIN\\benutzer und IMAP-Freigabe prüfen. Bei delegiertem Sammelpostfach kann ein eigener IMAP-Anmeldename nötig sein; das Dienstkonto braucht eine primäre SMTP-Adresse."
+        return "Exchange lehnt die SMTP-Anmeldung ab. SMTP-Anmeldename, Authentifizierung am Client-Frontend-Connector und Send-As-Berechtigung prüfen."
+    return raw[:300]
 
 
 def test_mailbox_connection(box, password):
@@ -71,13 +85,13 @@ def test_mailbox_connection(box, password):
     imap = None
     try:
         imap = imaplib.IMAP4_SSL(box["imap_host"], int(box.get("imap_port", 993)), ssl_context=ssl.create_default_context()) if box.get("imap_ssl", True) else imaplib.IMAP4(box["imap_host"], int(box.get("imap_port", 143)))
-        imap.login(box["username"], password)
+        imap.login(box.get("imap_username") or box.get("username"), password)
         if imap.select(box.get("folder") or "INBOX", readonly=True)[0] != "OK":
             raise RuntimeError(f"Ordner {box.get('folder') or 'INBOX'} nicht verfügbar")
         result["imap"] = {"ok": True, "message": "Anmeldung und Ordnerzugriff erfolgreich"}
     except Exception as exc:
         result["ok"] = False
-        result["imap"] = {"ok": False, "message": str(exc)[:300]}
+        result["imap"] = {"ok": False, "message": connection_error(exc, "imap", box), "technical": str(exc)[:160]}
     finally:
         if imap:
             try: imap.logout()
@@ -94,11 +108,11 @@ def test_mailbox_connection(box, password):
             if mode == "starttls":
                 smtp.starttls(context=ssl.create_default_context())
                 smtp.ehlo()
-        smtp.login(box["username"], password)
+        smtp.login(box.get("smtp_username") or box.get("username"), password)
         result["smtp"] = {"ok": True, "message": "Anmeldung erfolgreich; keine Mail gesendet"}
     except Exception as exc:
         result["ok"] = False
-        result["smtp"] = {"ok": False, "message": str(exc)[:300]}
+        result["smtp"] = {"ok": False, "message": connection_error(exc, "smtp", box), "technical": str(exc)[:160]}
     finally:
         if smtp:
             try: smtp.quit()
@@ -242,7 +256,7 @@ def forward_message(message_id, target, actor, rule_id=None, user_id=None):
         smtp = smtplib.SMTP(msg["smtp_host"], msg["smtp_port"], timeout=30)
         if msg["smtp_mode"] == "starttls": smtp.starttls(context=ssl.create_default_context())
     try:
-        smtp.login(msg["username"], password)
+        smtp.login(msg.get("smtp_username") or msg["username"], password)
         smtp.send_message(outgoing)
     finally:
         smtp.quit()

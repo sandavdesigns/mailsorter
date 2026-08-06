@@ -5,7 +5,7 @@ from unittest import mock
 os.environ.setdefault("APP_SECRET", "test-secret-with-at-least-24-characters")
 
 from app import exchange
-from app.exchange import apply_rules, clean_html, forward_message, move_message, rule_matches, test_mailbox_connection, test_mode_enabled
+from app.exchange import apply_rules, clean_html, connection_error, forward_message, move_message, rule_matches, test_mailbox_connection, test_mode_enabled
 from app.security import decrypt, encrypt, hash_password, verify_password
 
 
@@ -56,15 +56,22 @@ class SecurityTests(unittest.TestCase):
             self.assertEqual(audit.call_args.args[0], "rule_test_match")
 
     def test_mailbox_connection_test_does_not_send_mail(self):
-        settings = {"imap_host": "exchange.example.org", "imap_port": 993, "imap_ssl": True, "smtp_host": "exchange.example.org", "smtp_port": 587, "smtp_mode": "starttls", "username": "svc", "folder": "INBOX"}
+        settings = {"imap_host": "exchange.example.org", "imap_port": 993, "imap_ssl": True, "smtp_host": "exchange.example.org", "smtp_port": 587, "smtp_mode": "starttls", "username": "legacy", "imap_username": "imap-svc", "smtp_username": "smtp-svc", "folder": "INBOX"}
         with mock.patch.object(exchange.imaplib, "IMAP4_SSL") as imap_class, \
              mock.patch.object(exchange.smtplib, "SMTP") as smtp_class:
             imap_class.return_value.select.return_value = ("OK", [])
             result = test_mailbox_connection(settings, "secret")
             self.assertTrue(result["ok"])
-            imap_class.return_value.login.assert_called_once_with("svc", "secret")
-            smtp_class.return_value.login.assert_called_once_with("svc", "secret")
+            imap_class.return_value.login.assert_called_once_with("imap-svc", "secret")
+            smtp_class.return_value.login.assert_called_once_with("smtp-svc", "secret")
             self.assertFalse(smtp_class.return_value.send_message.called)
+
+    def test_exchange_errors_include_actionable_hints(self):
+        smtp_hint = connection_error(Exception("[SSL: WRONG_VERSION_NUMBER] wrong version number"), "smtp", {"smtp_port": 587})
+        self.assertIn("STARTTLS", smtp_hint)
+        imap_hint = connection_error(Exception("b'LOGIN failed.'"), "imap", {})
+        self.assertIn("UPN", imap_hint)
+        self.assertIn("primäre SMTP-Adresse", imap_hint)
 
 
 class RuleTests(unittest.TestCase):

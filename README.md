@@ -66,6 +66,8 @@ Pro gemeinsamem Postfach wird ein technisches Konto benötigt, das auf das Postf
 
 Beim Anlegen und Bearbeiten steht **Verbindung testen** zur Verfügung. Dabei prüft Mailsorter TLS-Verbindung, Anmeldung und Zugriff auf den angegebenen IMAP-Ordner sowie die SMTP-Anmeldung. Es wird ausdrücklich keine Testmail gesendet. Beim Bearbeiten kann das Passwort leer bleiben; dann wird das bereits verschlüsselt gespeicherte Passwort weiterverwendet.
 
+IMAP- und SMTP-Anmeldename können getrennt gepflegt werden. Das ist besonders bei delegierten Sammelpostfächern relevant: IMAP kann je nach Exchange-Konfiguration eine Kennung wie `dienstkonto@firma.de\\sammelpostfach@firma.de` benötigen, während SMTP weiterhin mit `dienstkonto@firma.de` authentifiziert wird. Für Exchange On-Premises ist SMTP-Port 587 normalerweise mit **STARTTLS** zu kombinieren; **SSL/TLS** auf Port 587 führt zu einem Protokollfehler.
+
 - IMAP muss am Exchange-Server aktiviert und vom Container erreichbar sein (üblich: TCP 993 mit TLS).
 - SMTP Client Submission muss erreichbar sein (üblich: TCP 587 mit STARTTLS) und das Konto muss mit der gemeinsamen Absenderadresse senden dürfen.
 - Für einen Dienstbenutzer kann der Benutzername je nach Exchange-Konfiguration `DOMAIN\\benutzer`, die UPN oder die E-Mail-Adresse sein.
