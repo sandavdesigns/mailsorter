@@ -275,6 +275,30 @@ class SecurityTests(unittest.TestCase):
             self.assertIsNone(deletion["mailbox_id"])
             self.assertTrue(db.row("SELECT * FROM audit_log WHERE action='message_received'"))
 
+    def test_sync_prunes_messages_missing_from_exchange_folder(self):
+        with tempfile.TemporaryDirectory() as temp_dir, \
+             mock.patch.object(db, "DATA_DIR", Path(temp_dir)), \
+             mock.patch.object(db, "DB_PATH", Path(temp_dir) / "test.sqlite3"):
+            db.init_db()
+            mailbox_id = db.execute("""INSERT INTO mailboxes(name,email,imap_host,smtp_host,username,password_enc,folder,active,created_at)
+              VALUES(?,?,?,?,?,?,?,?,?)""", ("Zentrale", "zentrale@example.org", "imap", "smtp", "svc", "encrypted", "INBOX", 1, db.now_iso()))
+            keep_id = db.execute("""INSERT INTO messages(mailbox_id,uid,sender,recipients,subject,created_at)
+              VALUES(?,?,?,?,?,?)""", (mailbox_id, "10", "a@example.org", "zentrale@example.org", "Bleibt", db.now_iso()))
+            remove_id = db.execute("""INSERT INTO messages(mailbox_id,uid,sender,recipients,subject,created_at)
+              VALUES(?,?,?,?,?,?)""", (mailbox_id, "11", "b@example.org", "zentrale@example.org", "Gelöscht", db.now_iso()))
+            db.execute("""INSERT INTO attachments(message_id,filename,content_type,size,stored,content,created_at)
+              VALUES(?,?,?,?,?,?,?)""", (remove_id, "alt.pdf", "application/pdf", 3, 1, b"pdf", db.now_iso()))
+
+            removed = db.prune_mailbox_messages(mailbox_id, {"10"}, actor="sync")
+
+            self.assertEqual(removed, 1)
+            self.assertIsNotNone(db.row("SELECT * FROM messages WHERE id=?", (keep_id,)))
+            self.assertIsNone(db.row("SELECT * FROM messages WHERE id=?", (remove_id,)))
+            self.assertEqual(db.rows("SELECT * FROM attachments"), [])
+            audit = db.row("SELECT * FROM audit_log WHERE action='message_removed_from_mailbox'")
+            self.assertIsNotNone(audit)
+            self.assertIsNone(audit["message_id"])
+
     def test_existing_rule_can_be_edited_and_reactivated(self):
         with tempfile.TemporaryDirectory() as temp_dir, \
              mock.patch.object(db, "DATA_DIR", Path(temp_dir)), \

@@ -490,7 +490,7 @@ def move_message(message_id, folder, actor="system", rule_id=None):
 
 def fetch_mailbox(box):
     client = connect_imap(box)
-    count = 0
+    count = removed = 0
     try:
         status, _ = client.select(box["folder"], readonly=True)
         if status != "OK":
@@ -498,7 +498,10 @@ def fetch_mailbox(box):
         status, data = client.uid("search", None, "ALL")
         if status != "OK":
             raise RuntimeError("IMAP-Suche fehlgeschlagen")
-        for uid_b in data[0].split()[-500:]:
+        found_uids = data[0].split() if data and data[0] else []
+        present_uids = {uid_b.decode() for uid_b in found_uids}
+        removed = db.prune_mailbox_messages(box["id"], present_uids)
+        for uid_b in found_uids[-500:]:
             uid = uid_b.decode()
             existing = db.row("SELECT id,parser_version FROM messages WHERE mailbox_id=? AND uid=?", (box["id"], uid))
             if existing and int(existing.get("parser_version") or 1) >= MESSAGE_PARSER_VERSION:
@@ -530,7 +533,7 @@ def fetch_mailbox(box):
                 apply_rules(message_id)
                 count += 1
         db.execute("UPDATE mailboxes SET last_sync_at=?,last_error=NULL WHERE id=?", (db.now_iso(), box["id"]))
-        return count
+        return {"new_messages": count, "removed_messages": removed}
     finally:
         try: client.logout()
         except Exception: pass

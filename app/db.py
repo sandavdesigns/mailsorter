@@ -152,3 +152,27 @@ def purge_mailbox(mailbox_id, actor):
         )
         con.execute("DELETE FROM mailboxes WHERE id=?", (mailbox_id,))
         return details
+
+
+def prune_mailbox_messages(mailbox_id, present_uids, actor="sync"):
+    """Remove local messages that no longer exist in the monitored Exchange folder."""
+    present_uids = {str(uid) for uid in present_uids}
+    with connect() as con:
+        if present_uids:
+            placeholders = ",".join("?" for _ in present_uids)
+            sql = f"SELECT id,uid,subject,sender FROM messages WHERE mailbox_id=? AND uid NOT IN ({placeholders})"
+            removed = [dict(r) for r in con.execute(sql, (mailbox_id, *present_uids)).fetchall()]
+        else:
+            removed = [dict(r) for r in con.execute("SELECT id,uid,subject,sender FROM messages WHERE mailbox_id=?", (mailbox_id,)).fetchall()]
+        for message in removed:
+            con.execute(
+                "INSERT INTO audit_log(message_id,mailbox_id,actor,action,details,created_at) VALUES(?,?,?,?,?,?)",
+                (
+                    message["id"], mailbox_id, actor, "message_removed_from_mailbox",
+                    json.dumps({"uid": message["uid"], "subject": message["subject"], "sender": message["sender"]}, ensure_ascii=False),
+                    now_iso(),
+                ),
+            )
+        if removed:
+            con.executemany("DELETE FROM messages WHERE id=?", [(message["id"],) for message in removed])
+        return len(removed)

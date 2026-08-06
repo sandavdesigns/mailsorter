@@ -21,7 +21,7 @@ Mailsorter ist eine browserbasierte Verteilstelle für gemeinsame Firmenpostfäc
 - sicherer Testmodus für einzelne Entwürfe und den vollständigen aktiven Regelsatz
 - Benutzerrollen `admin` und `agent`
 - Audit-Protokoll für Empfang, Anmeldung, Weiterleitung, Verschiebung, Regeln und Fehler
-- regelmäßige Synchronisierung und manueller Abruf
+- regelmäßige Synchronisierung und manueller Abruf; lokal gespeicherte Mails, die nicht mehr im überwachten Exchange-Ordner liegen, werden entfernt
 - persistente SQLite-Datenbank in einem Docker-Volume
 
 ## Schnellstart mit Docker Compose
@@ -91,6 +91,8 @@ Regeln laufen in aufsteigender Priorität. Zuerst werden globale und postfachbez
 Weiterleitungsregeln können optional einen Folgeordner enthalten. Dann wird die Mail zuerst an den gewählten Benutzer oder die Zieladresse gesendet und anschließend im ursprünglichen Exchange-Postfach in den gewählten Archivordner verschoben. Diese Kombiregeln müssen einem konkreten Postfach zugeordnet sein, damit die Ordnerauswahl eindeutig ist. Manuelle Weiterleitungen bieten dieselbe optionale Archivierung an.
 
 Eine Regel wirkt auf neu synchronisierte Mails. Das nachträgliche Anlegen einer Regel verarbeitet vorhandene Mails nicht erneut. So verhindert die Anwendung unerwartete Massenweiterleitungen. Eine manuelle Aktion ist jederzeit in der Mailansicht möglich.
+
+Beim Synchronisieren spiegelt Mailsorter den überwachten Ordner des Postfachs. Wenn eine bereits eingelesene Mail in Exchange gelöscht oder aus diesem Ordner verschoben wurde, entfernt Mailsorter sie beim nächsten erfolgreichen Abruf auch lokal samt gespeicherten Anlagen. Der Audit-Verlauf bleibt erhalten.
 
 ### Regeln vor dem Live-Betrieb testen
 

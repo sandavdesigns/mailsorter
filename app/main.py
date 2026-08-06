@@ -290,10 +290,10 @@ def sync_mailbox(mailbox_id: int, session: str | None = Cookie(None)):
     user = require_user(session)
     box = db.row("SELECT * FROM mailboxes WHERE id=?", (mailbox_id,))
     if not box: raise HTTPException(404, "Postfach nicht gefunden")
-    try: count = fetch_mailbox(box)
+    try: result = fetch_mailbox(box)
     except Exception as exc: raise HTTPException(502, f"Synchronisierung fehlgeschlagen: {exc}")
-    db.audit("manual_sync", actor=user["email"], mailbox_id=mailbox_id, new_messages=count)
-    return {"new_messages": count}
+    db.audit("manual_sync", actor=user["email"], mailbox_id=mailbox_id, new_messages=result["new_messages"], removed_messages=result["removed_messages"])
+    return result
 
 
 @app.get("/api/mailboxes/{mailbox_id}/folders")
