@@ -409,7 +409,8 @@ def add_mailbox_folder(mailbox_id: int, payload: dict = Body(...), session: str 
         status = 409 if test_mode_enabled() else 502
         raise HTTPException(status, str(exc))
     db.audit("mailbox_folder_created", actor=user["email"], mailbox_id=mailbox_id, folder=folder, parent=payload.get("parent") or "")
-    return {"ok": True, "folder": folder}
+    root = str(box.get("folder") or "INBOX").strip().rstrip("/") + "/"
+    return {"ok": True, "folder": folder, "display": folder[len(root):] if folder.startswith(root) else folder}
 
 
 @app.delete("/api/mailboxes/{mailbox_id}")

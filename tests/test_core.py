@@ -150,6 +150,22 @@ class SecurityTests(unittest.TestCase):
         self.assertEqual([entry["name"] for entry in entries], ["INBOX/Prüfung", "INBOX/Büro", "INBOX/Rückfragen"])
         self.assertEqual([entry["wire_encoding"] for entry in entries], ["imap-utf7", "utf-8", "cp1252"])
 
+    def test_list_folders_only_returns_children_below_configured_inbox(self):
+        client = mock.MagicMock()
+        client.list.return_value = ("OK", [
+            b'(\\HasChildren) "/" "INBOX"',
+            b'(\\HasNoChildren) "/" "INBOX/Rechnungen"',
+            b'(\\HasNoChildren) "/" "INBOX/Rechnungen/2026"',
+            b'(\\HasNoChildren) "/" "Archiv"',
+            b'(\\HasNoChildren) "/" "Gesendet"',
+        ])
+        with mock.patch.object(exchange, "connect_imap", return_value=client):
+            folders = exchange.list_folders({"id": 2, "folder": "INBOX"})
+        self.assertEqual(folders, [
+            {"name": "INBOX/Rechnungen", "display": "Rechnungen"},
+            {"name": "INBOX/Rechnungen/2026", "display": "Rechnungen/2026"},
+        ])
+
     def test_exchange_folder_creation_follows_direct_utf8_server_encoding(self):
         client = mock.MagicMock()
         client.list.side_effect = [

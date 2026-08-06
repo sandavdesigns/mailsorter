@@ -429,7 +429,14 @@ def folder_entries(client):
 def list_folders(box):
     client = connect_imap(box)
     try:
-        return [entry["name"] for entry in folder_entries(client)]
+        root = str(box.get("folder") or "INBOX").strip().rstrip("/")
+        prefix = root + "/"
+        folders = []
+        for entry in folder_entries(client):
+            name = entry["name"]
+            if name.startswith(prefix):
+                folders.append({"name": name, "display": name[len(prefix):]})
+        return folders
     finally:
         try: client.logout()
         except Exception: pass
