@@ -20,6 +20,22 @@ STATIC = Path(__file__).parent / "static"
 stop_event = threading.Event()
 
 
+class NoCacheStaticFiles(StaticFiles):
+    async def get_response(self, path: str, scope):
+        response = await super().get_response(path, scope)
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+        return response
+
+
+def asset_version():
+    try:
+        return str(max(p.stat().st_mtime_ns for p in STATIC.iterdir() if p.is_file()))
+    except OSError:
+        return db.now_iso()
+
+
 def bootstrap_admin():
     if db.row("SELECT id FROM users LIMIT 1"):
         return
@@ -63,7 +79,7 @@ async def lifespan(app):
 
 
 app = FastAPI(title="Mailsorter", version="0.1.0", lifespan=lifespan)
-app.mount("/static", StaticFiles(directory=STATIC), name="static")
+app.mount("/static", NoCacheStaticFiles(directory=STATIC), name="static")
 
 
 def current_user(session: str | None):
@@ -109,7 +125,12 @@ def ensure_mailbox_access(user, mailbox_id):
 
 @app.get("/", response_class=HTMLResponse)
 def index():
-    return FileResponse(STATIC / "index.html")
+    html = (STATIC / "index.html").read_text(encoding="utf-8").replace("__ASSET_VERSION__", asset_version())
+    return HTMLResponse(html, headers={
+        "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+        "Pragma": "no-cache",
+        "Expires": "0",
+    })
 
 
 @app.get("/health")

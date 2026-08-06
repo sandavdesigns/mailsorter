@@ -1,6 +1,6 @@
 # Mailsorter
 
-Mailsorter ist eine browserbasierte Verteilstelle für gemeinsame Firmenpostfächer. Die Anwendung liest Exchange-Postfächer über IMAP, zeigt Text- und HTML-Mails sicher an und verarbeitet sie über globale oder postfachbezogene Regeln.
+Mailsorter ist eine browserbasierte Verteilstelle für gemeinsame Firmenpostfächer. Die Anwendung liest Exchange-Postfächer über IMAP, zeigt Text- und HTML-Mails sicher an und verarbeitet sie über Regeln, die jeweils fest einem Postfach zugeordnet sind.
 
 ## Funktionen
 
@@ -15,8 +15,7 @@ Mailsorter ist eine browserbasierte Verteilstelle für gemeinsame Firmenpostfäc
 - manuelles Verschieben in vorhandene Exchange-Unterordner; Administratoren können neue Unterordner direkt in der Postfachverwaltung anlegen
 - Regeln auf Absender, Empfänger, Betreff oder Mailinhalt
 - Regelaktionen: per SMTP weiterleiten, per IMAP in Unterordner verschieben oder nach einer Weiterleitung automatisch archivieren
-- globale Regeln und Regeln je Postfach; bestehende Regeln können bearbeitet, deaktiviert und wieder aktiviert werden
-- Verschieberegeln sind immer postfachbezogen
+- Regeln je Postfach; bestehende Regeln können bearbeitet, deaktiviert, wieder aktiviert, exportiert und importiert werden
 - priorisierte Regeln mit optionalem Verarbeitungsstopp
 - sicherer Testmodus für einzelne Entwürfe und den vollständigen aktiven Regelsatz
 - Benutzerrollen `admin` und `agent`
