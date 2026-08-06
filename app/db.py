@@ -42,7 +42,8 @@ def init_db():
           id INTEGER PRIMARY KEY, name TEXT NOT NULL, email TEXT NOT NULL,
           imap_host TEXT NOT NULL, imap_port INTEGER NOT NULL DEFAULT 993,
           smtp_host TEXT NOT NULL, smtp_port INTEGER NOT NULL DEFAULT 587,
-          username TEXT NOT NULL, imap_username TEXT, smtp_username TEXT, password_enc TEXT NOT NULL,
+          username TEXT NOT NULL, imap_username TEXT, smtp_username TEXT,
+          imap_auth_mode TEXT NOT NULL DEFAULT 'auto', password_enc TEXT NOT NULL,
           imap_ssl INTEGER NOT NULL DEFAULT 1, smtp_mode TEXT NOT NULL DEFAULT 'starttls',
           folder TEXT NOT NULL DEFAULT 'INBOX', active INTEGER NOT NULL DEFAULT 1,
           last_sync_at TEXT, last_error TEXT, created_at TEXT NOT NULL
@@ -88,6 +89,8 @@ def init_db():
             db.execute("ALTER TABLE mailboxes ADD COLUMN imap_username TEXT")
         if "smtp_username" not in mailbox_columns:
             db.execute("ALTER TABLE mailboxes ADD COLUMN smtp_username TEXT")
+        if "imap_auth_mode" not in mailbox_columns:
+            db.execute("ALTER TABLE mailboxes ADD COLUMN imap_auth_mode TEXT NOT NULL DEFAULT 'auto'")
         db.execute("UPDATE mailboxes SET imap_username=COALESCE(imap_username,username),smtp_username=COALESCE(smtp_username,username)")
 
 

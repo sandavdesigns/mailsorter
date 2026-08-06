@@ -68,6 +68,8 @@ Beim Anlegen und Bearbeiten steht **Verbindung testen** zur Verfügung. Dabei pr
 
 IMAP- und SMTP-Anmeldename können getrennt gepflegt werden. Das ist besonders bei delegierten Sammelpostfächern relevant: IMAP kann je nach Exchange-Konfiguration eine Kennung wie `dienstkonto@firma.de\\sammelpostfach@firma.de` benötigen, während SMTP weiterhin mit `dienstkonto@firma.de` authentifiziert wird. Für Exchange On-Premises ist SMTP-Port 587 normalerweise mit **STARTTLS** zu kombinieren; **SSL/TLS** auf Port 587 führt zu einem Protokollfehler.
 
+Für IMAP stehen `Automatisch`, `LOGIN` und `NTLMv2 / SecureLogin` bereit. `Automatisch` versucht zuerst den normalen IMAP-Login. Lehnt Exchange diesen ab und meldet `AUTH=NTLM`, baut Mailsorter eine frische Verbindung auf und verwendet NTLMv2. Damit bleibt der Exchange-Standard `SecureLogin` nutzbar, ohne den Server auf PlainTextLogin umzustellen.
+
 - IMAP muss am Exchange-Server aktiviert und vom Container erreichbar sein (üblich: TCP 993 mit TLS).
 - SMTP Client Submission muss erreichbar sein (üblich: TCP 587 mit STARTTLS) und das Konto muss mit der gemeinsamen Absenderadresse senden dürfen.
 - Für einen Dienstbenutzer kann der Benutzername je nach Exchange-Konfiguration `DOMAIN\\benutzer`, die UPN oder die E-Mail-Adresse sein.

@@ -9,6 +9,7 @@ from email.message import EmailMessage
 from email.utils import parsedate_to_datetime
 
 import bleach
+import spnego
 
 from . import db
 from .security import decrypt
@@ -59,10 +60,59 @@ def message_bodies(msg):
     return text, html
 
 
+def open_imap(box):
+    return imaplib.IMAP4_SSL(box["imap_host"], int(box["imap_port"]), ssl_context=ssl.create_default_context()) if box["imap_ssl"] else imaplib.IMAP4(box["imap_host"], int(box["imap_port"]))
+
+
+def authenticate_imap_ntlm(client, box, password):
+    username = box.get("imap_username") or box["username"]
+    context = spnego.client(username=username, password=password, hostname=box["imap_host"], service="imap", protocol="ntlm")
+    started = False
+
+    def response(challenge):
+        nonlocal started
+        if not started:
+            started = True
+            return context.step()
+        return context.step(challenge)
+
+    client.authenticate("NTLM", response)
+    client._mailsorter_auth_mode = "NTLMv2"
+
+
+def connect_imap_with_password(box, password):
+    mode = (box.get("imap_auth_mode") or "auto").lower()
+    username = box.get("imap_username") or box["username"]
+    if mode not in {"auto", "login", "ntlm"}:
+        raise ValueError("Ungültiger IMAP-Authentifizierungsmodus")
+    client = open_imap(box)
+    if mode in {"auto", "login"}:
+        try:
+            client.login(username, password)
+            client._mailsorter_auth_mode = "LOGIN"
+            return client
+        except Exception as login_error:
+            if mode == "login":
+                try: client.logout()
+                except Exception: pass
+                raise
+            capabilities = b" ".join(c if isinstance(c, bytes) else str(c).encode() for c in getattr(client, "capabilities", ())).upper()
+            try: client.logout()
+            except Exception: pass
+            if b"AUTH=NTLM" not in capabilities:
+                raise RuntimeError(f"LOGIN fehlgeschlagen und Exchange bietet AUTH=NTLM nicht an: {login_error}") from login_error
+    client = open_imap(box)
+    try:
+        authenticate_imap_ntlm(client, box, password)
+        return client
+    except Exception:
+        try: client.logout()
+        except Exception: pass
+        raise
+
+
 def connect_imap(box):
-    client = imaplib.IMAP4_SSL(box["imap_host"], box["imap_port"], ssl_context=ssl.create_default_context()) if box["imap_ssl"] else imaplib.IMAP4(box["imap_host"], box["imap_port"])
-    client.login(box.get("imap_username") or box["username"], decrypt(box["password_enc"]))
-    return client
+    return connect_imap_with_password(box, decrypt(box["password_enc"]))
 
 
 def connection_error(exc, protocol, box):
@@ -84,11 +134,11 @@ def test_mailbox_connection(box, password):
     result = {"ok": True, "imap": {"ok": False}, "smtp": {"ok": False}}
     imap = None
     try:
-        imap = imaplib.IMAP4_SSL(box["imap_host"], int(box.get("imap_port", 993)), ssl_context=ssl.create_default_context()) if box.get("imap_ssl", True) else imaplib.IMAP4(box["imap_host"], int(box.get("imap_port", 143)))
-        imap.login(box.get("imap_username") or box.get("username"), password)
+        imap = connect_imap_with_password(box, password)
         if imap.select(box.get("folder") or "INBOX", readonly=True)[0] != "OK":
             raise RuntimeError(f"Ordner {box.get('folder') or 'INBOX'} nicht verfügbar")
-        result["imap"] = {"ok": True, "message": "Anmeldung und Ordnerzugriff erfolgreich"}
+        auth_mode = getattr(imap, "_mailsorter_auth_mode", "IMAP")
+        result["imap"] = {"ok": True, "message": f"Anmeldung mit {auth_mode} und Ordnerzugriff erfolgreich"}
     except Exception as exc:
         result["ok"] = False
         result["imap"] = {"ok": False, "message": connection_error(exc, "imap", box), "technical": str(exc)[:160]}
