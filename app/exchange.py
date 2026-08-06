@@ -102,13 +102,29 @@ def imap_utf7_decode(value):
     return "".join(result)
 
 
-def imap_mailbox_arg(value):
+def decode_imap_list_line(raw):
+    if isinstance(raw, str):
+        return raw, "utf-8"
+    if all(byte < 128 for byte in raw):
+        return raw.decode("ascii"), "imap-utf7"
+    for charset in ("utf-8", "cp1252", "latin-1"):
+        try:
+            return raw.decode(charset), charset
+        except UnicodeDecodeError:
+            continue
+    return raw.decode("utf-8", errors="replace"), "utf-8"
+
+
+def imap_mailbox_arg(value, wire_encoding="imap-utf7"):
     value = str(value)
-    decoded_value = imap_utf7_decode(value)
-    # Keep folder values saved by older Mailsorter versions in their already encoded form.
-    encoded = value if decoded_value != value and imap_utf7_encode(decoded_value) == value else imap_utf7_encode(value)
-    encoded = encoded.replace("\\", "\\\\").replace('"', '\\"')
-    return f'"{encoded}"'.encode("ascii")
+    if wire_encoding == "imap-utf7":
+        decoded_value = imap_utf7_decode(value)
+        # Keep folder values saved by older Mailsorter versions in their already encoded form.
+        encoded = value if decoded_value != value and imap_utf7_encode(decoded_value) == value else imap_utf7_encode(value)
+        raw = encoded.encode("ascii")
+    else:
+        raw = value.encode(wire_encoding)
+    return b'"' + raw.replace(b"\\", b"\\\\").replace(b'"', b'\\"') + b'"'
 
 
 def clean_html(value):
@@ -392,7 +408,7 @@ def folder_entries(client):
     if status != "OK": raise RuntimeError("IMAP-Ordner konnten nicht gelesen werden")
     result = []
     for raw in values or []:
-        line = raw.decode("ascii", errors="replace")
+        line, wire_encoding = decode_imap_list_line(raw)
         # IMAP LIST: flags, hierarchy delimiter and quoted/unquoted mailbox name.
         match = re.match(r'.*?\s+(?:"([^"]*)"|NIL)\s+(?:"((?:\\.|[^"])*)"|(.*))$', line)
         if not match:
@@ -401,7 +417,8 @@ def folder_entries(client):
         raw_name = (match.group(2) if match.group(2) is not None else match.group(3) or "").strip()
         raw_name = raw_name.replace('\\"', '"').replace("\\\\", "\\")
         if raw_name:
-            result.append({"name": imap_utf7_decode(raw_name), "delimiter": delimiter})
+            name = imap_utf7_decode(raw_name) if wire_encoding == "imap-utf7" else raw_name
+            result.append({"name": name, "delimiter": delimiter, "wire_encoding": wire_encoding})
     return result
 
 
@@ -424,12 +441,13 @@ def create_folder(box, name, parent=""):
     try:
         entries = folder_entries(client)
         delimiter = next((entry["delimiter"] for entry in entries if entry["delimiter"]), "/")
+        wire_encoding = next((entry["wire_encoding"] for entry in entries if entry["wire_encoding"] != "imap-utf7"), "imap-utf7")
         if parent and parent not in {entry["name"] for entry in entries}:
             raise ValueError("Übergeordneter Ordner wurde nicht gefunden")
         full_name = f"{parent}{delimiter}{name}" if parent else name
         if full_name in {entry["name"] for entry in entries}:
             raise ValueError("Dieser Ordner existiert bereits")
-        status, details = client.create(imap_mailbox_arg(full_name))
+        status, details = client.create(imap_mailbox_arg(full_name, wire_encoding))
         if status != "OK":
             reason = " ".join(item.decode(errors="replace") if isinstance(item, bytes) else str(item) for item in details or [])
             raise RuntimeError(f"Exchange hat den Ordner nicht angelegt: {reason or status}")
@@ -451,7 +469,9 @@ def move_message(message_id, folder, actor="system", rule_id=None):
     try:
         if client.select(msg["folder"], readonly=False)[0] != "OK": raise RuntimeError("Quellordner nicht verfügbar")
         # RFC 6851 MOVE where available, with broadly compatible COPY fallback.
-        folder_arg = imap_mailbox_arg(folder)
+        try: entry = next((item for item in folder_entries(client) if item["name"] == folder), None)
+        except Exception: entry = None
+        folder_arg = imap_mailbox_arg(folder, entry["wire_encoding"] if entry else "imap-utf7")
         status, _ = client.uid("MOVE", msg["uid"], folder_arg)
         if status != "OK":
             if client.uid("COPY", msg["uid"], folder_arg)[0] != "OK": raise RuntimeError(f"Verschieben nach {folder} fehlgeschlagen")

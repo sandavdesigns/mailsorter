@@ -107,6 +107,27 @@ class SecurityTests(unittest.TestCase):
         client.create.assert_called_once_with(b'"INBOX/Archiv/Pr&APw-fung"')
         client.logout.assert_called_once()
 
+    def test_exchange_folder_list_decodes_utf7_utf8_and_windows_umlauts(self):
+        client = mock.MagicMock()
+        client.list.return_value = ("OK", [
+            b'(\\HasNoChildren) "/" "INBOX/Pr&APw-fung"',
+            b'(\\HasNoChildren) "/" "INBOX/B\xc3\xbcro"',
+            b'(\\HasNoChildren) "/" "INBOX/R\xfcckfragen"',
+        ])
+        entries = exchange.folder_entries(client)
+        self.assertEqual([entry["name"] for entry in entries], ["INBOX/Prüfung", "INBOX/Büro", "INBOX/Rückfragen"])
+        self.assertEqual([entry["wire_encoding"] for entry in entries], ["imap-utf7", "utf-8", "cp1252"])
+
+    def test_exchange_folder_creation_follows_direct_utf8_server_encoding(self):
+        client = mock.MagicMock()
+        client.list.return_value = ("OK", [b'(\\HasChildren) "/" "INBOX/B\xc3\xbcro"'])
+        client.create.return_value = ("OK", [b"CREATE completed"])
+        with mock.patch.object(exchange, "test_mode_enabled", return_value=False), \
+             mock.patch.object(exchange, "connect_imap", return_value=client):
+            created = create_folder({"id": 2}, "Rückfragen", "INBOX/Büro")
+        self.assertEqual(created, "INBOX/Büro/Rückfragen")
+        client.create.assert_called_once_with(b'"INBOX/B\xc3\xbcro/R\xc3\xbcckfragen"')
+
     def test_imap_folder_names_roundtrip_modified_utf7(self):
         name = "INBOX/Prüfung & Ablage 日本語"
         self.assertEqual(imap_utf7_decode(imap_utf7_encode(name)), name)
