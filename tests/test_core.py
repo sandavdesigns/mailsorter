@@ -253,6 +253,32 @@ class SecurityTests(unittest.TestCase):
             self.assertIsNone(deletion["mailbox_id"])
             self.assertTrue(db.row("SELECT * FROM audit_log WHERE action='message_received'"))
 
+    def test_existing_rule_can_be_edited_and_reactivated(self):
+        with tempfile.TemporaryDirectory() as temp_dir, \
+             mock.patch.object(db, "DATA_DIR", Path(temp_dir)), \
+             mock.patch.object(db, "DB_PATH", Path(temp_dir) / "test.sqlite3"):
+            db.init_db()
+            rule_id = db.execute("""INSERT INTO rules(name,field,operator,value,action,target_email,target_folder,priority,active,stop_processing,created_at)
+              VALUES(?,?,?,?,?,?,?,?,?,?,?)""", ("Alt", "from", "contains", "alt@example.org", "forward", "alt-target@example.org", "Alter Ordner", 100, 0, 1, db.now_iso()))
+            payload = {
+                "name": "Neue Betreffregel", "field": "subject", "operator": "starts_with", "value": "Rechnung",
+                "action": "forward", "target_email": "team@example.org", "priority": 25,
+                "stop_processing": 0, "active": 1,
+            }
+            with mock.patch.object(main, "require_user", return_value={"email": "editor@example.org"}):
+                result = main.update_rule(rule_id, payload, session=None)
+            updated = db.row("SELECT * FROM rules WHERE id=?", (rule_id,))
+            self.assertTrue(result["ok"])
+            self.assertEqual(updated["name"], "Neue Betreffregel")
+            self.assertEqual(updated["field"], "subject")
+            self.assertEqual(updated["operator"], "starts_with")
+            self.assertEqual(updated["target_email"], "team@example.org")
+            self.assertIsNone(updated["target_folder"])
+            self.assertEqual(updated["priority"], 25)
+            self.assertEqual(updated["active"], 1)
+            self.assertEqual(updated["stop_processing"], 0)
+            self.assertIsNotNone(db.row("SELECT * FROM audit_log WHERE action='rule_updated'"))
+
     def test_imap_auto_falls_back_to_ntlm(self):
         settings = {"imap_host": "exchange.example.org", "imap_port": 993, "imap_ssl": True, "imap_username": "DOMAIN\\svc", "username": "DOMAIN\\svc", "imap_auth_mode": "auto"}
         login_client, ntlm_client = mock.MagicMock(), mock.MagicMock()

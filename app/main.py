@@ -366,6 +366,29 @@ def validate_rule_condition(payload):
         raise HTTPException(400, "Regelwert fehlt")
 
 
+def normalized_rule(payload):
+    validate_rule_condition(payload)
+    action = payload.get("action", "forward")
+    if action not in {"forward", "move"}: raise HTTPException(400, "Ungültige Regelaktion")
+    mailbox_id = payload.get("mailbox_id") or None
+    target_user_id = payload.get("target_user_id") or None
+    target_email = str(payload.get("target_email") or "").strip() or None
+    target_folder = str(payload.get("target_folder") or "").strip() or None
+    if action == "forward" and not target_user_id and not target_email: raise HTTPException(400, "Weiterleitung benötigt ein Ziel")
+    if action == "move" and (not mailbox_id or not target_folder): raise HTTPException(400, "Verschieben benötigt Postfach und Zielordner")
+    try: priority = int(payload.get("priority", 100))
+    except (TypeError, ValueError): raise HTTPException(400, "Priorität muss eine Zahl sein")
+    return {
+        "name": str(payload.get("name") or "Neue Regel").strip() or "Neue Regel",
+        "mailbox_id": mailbox_id, "field": payload["field"], "operator": payload["operator"],
+        "value": str(payload.get("value", "")), "action": action,
+        "target_user_id": target_user_id if action == "forward" else None,
+        "target_email": target_email if action == "forward" else None,
+        "target_folder": target_folder if action == "move" else None,
+        "priority": priority, "stop_processing": int(bool(payload.get("stop_processing", 1))),
+    }
+
+
 @app.post("/api/rules/preview")
 def preview_rule(payload: dict = Body(...), session: str | None = Cookie(None)):
     """Evaluate one unsaved rule without performing an action or writing audit data."""
@@ -412,15 +435,24 @@ def simulate_rules(mailbox_id: int | None = None, session: str | None = Cookie(N
 @app.post("/api/rules")
 def add_rule(payload: dict = Body(...), session: str | None = Cookie(None)):
     user = require_user(session)
-    validate_rule_condition(payload)
-    action = payload.get("action", "forward")
-    if action not in {"forward", "move"}: raise HTTPException(400, "Ungültige Regelaktion")
-    if action == "forward" and not payload.get("target_user_id") and not payload.get("target_email"): raise HTTPException(400, "Weiterleitung benötigt ein Ziel")
-    if action == "move" and (not payload.get("mailbox_id") or not payload.get("target_folder")): raise HTTPException(400, "Verschieben benötigt Postfach und Zielordner")
+    rule = normalized_rule(payload)
     rule_id = db.execute("""INSERT INTO rules(name,mailbox_id,field,operator,value,action,target_user_id,target_email,target_folder,priority,active,stop_processing,created_at)
-      VALUES(?,?,?,?,?,?,?,?,?,?,1,?,?)""", (payload.get("name") or "Neue Regel", payload.get("mailbox_id") or None, payload["field"], payload["operator"], payload.get("value", ""), action, payload.get("target_user_id") or None, payload.get("target_email") or None, payload.get("target_folder") or None, int(payload.get("priority",100)), int(payload.get("stop_processing",1)), db.now_iso()))
-    db.audit("rule_created", actor=user["email"], rule_id=rule_id, name=payload.get("name"))
+      VALUES(?,?,?,?,?,?,?,?,?,?,1,?,?)""", (rule["name"], rule["mailbox_id"], rule["field"], rule["operator"], rule["value"], rule["action"], rule["target_user_id"], rule["target_email"], rule["target_folder"], rule["priority"], rule["stop_processing"], db.now_iso()))
+    db.audit("rule_created", actor=user["email"], rule_id=rule_id, name=rule["name"])
     return {"id": rule_id}
+
+
+@app.put("/api/rules/{rule_id}")
+def update_rule(rule_id: int, payload: dict = Body(...), session: str | None = Cookie(None)):
+    user = require_user(session)
+    current = db.row("SELECT * FROM rules WHERE id=?", (rule_id,))
+    if not current: raise HTTPException(404, "Regel nicht gefunden")
+    rule = normalized_rule(payload)
+    active = int(bool(payload.get("active", current["active"])))
+    db.execute("""UPDATE rules SET name=?,mailbox_id=?,field=?,operator=?,value=?,action=?,target_user_id=?,target_email=?,target_folder=?,priority=?,active=?,stop_processing=? WHERE id=?""",
+      (rule["name"], rule["mailbox_id"], rule["field"], rule["operator"], rule["value"], rule["action"], rule["target_user_id"], rule["target_email"], rule["target_folder"], rule["priority"], active, rule["stop_processing"], rule_id))
+    db.audit("rule_updated", actor=user["email"], rule_id=rule_id, name=rule["name"], rule_action=rule["action"], active=bool(active))
+    return {"ok": True, "id": rule_id}
 
 
 @app.delete("/api/rules/{rule_id}")

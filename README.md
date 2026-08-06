@@ -15,7 +15,8 @@ Mailsorter ist eine browserbasierte Verteilstelle für gemeinsame Firmenpostfäc
 - manuelles Verschieben in vorhandene Exchange-Unterordner; Administratoren können neue Unterordner direkt in der Postfachverwaltung anlegen
 - Regeln auf Absender, Empfänger, Betreff oder Mailinhalt
 - Regelaktionen: per SMTP weiterleiten **oder** per IMAP in Unterordner verschieben
-- globale Regeln und Regeln je Postfach; Verschieberegeln sind immer postfachbezogen
+- globale Regeln und Regeln je Postfach; bestehende Regeln können bearbeitet, deaktiviert und wieder aktiviert werden
+- Verschieberegeln sind immer postfachbezogen
 - priorisierte Regeln mit optionalem Verarbeitungsstopp
 - sicherer Testmodus für einzelne Entwürfe und den vollständigen aktiven Regelsatz
 - Benutzerrollen `admin` und `agent`
