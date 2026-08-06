@@ -12,7 +12,7 @@ Mailsorter ist eine browserbasierte Verteilstelle für gemeinsame Firmenpostfäc
 - externe Mailbilder werden zum Schutz vor Tracking erst nach einem bewussten Klick geladen
 - Anlagenleiste mit Dateiname, Typ, Größe und sicherem Download; gespeicherte Anlagen werden beim Weiterleiten übernommen
 - manuelle Weiterleitung an interne Benutzer oder freie E-Mail-Adressen
-- manuelles Verschieben in vorhandene Exchange-Unterordner
+- manuelles Verschieben in vorhandene Exchange-Unterordner; Administratoren können neue Unterordner direkt in der Postfachverwaltung anlegen
 - Regeln auf Absender, Empfänger, Betreff oder Mailinhalt
 - Regelaktionen: per SMTP weiterleiten **oder** per IMAP in Unterordner verschieben
 - globale Regeln und Regeln je Postfach; Verschieberegeln sind immer postfachbezogen

@@ -13,7 +13,7 @@ from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import db
-from .exchange import fetch_mailbox, forward_message, list_folders, move_message, rule_matches, test_mailbox_connection, test_mode_enabled
+from .exchange import create_folder, fetch_mailbox, forward_message, list_folders, move_message, rule_matches, test_mailbox_connection, test_mode_enabled
 from .security import decrypt, encrypt, hash_password, new_session, token_hash, verify_password
 
 STATIC = Path(__file__).parent / "static"
@@ -296,6 +296,21 @@ def mailbox_folders(mailbox_id: int, session: str | None = Cookie(None)):
     if not box: raise HTTPException(404, "Postfach nicht gefunden")
     try: return list_folders(box)
     except Exception as exc: raise HTTPException(502, f"Ordner konnten nicht geladen werden: {exc}")
+
+
+@app.post("/api/mailboxes/{mailbox_id}/folders")
+def add_mailbox_folder(mailbox_id: int, payload: dict = Body(...), session: str | None = Cookie(None)):
+    user = require_admin(session)
+    box = db.row("SELECT * FROM mailboxes WHERE id=?", (mailbox_id,))
+    if not box: raise HTTPException(404, "Postfach nicht gefunden")
+    if not box["active"]: raise HTTPException(409, "Das Postfach ist deaktiviert")
+    try: folder = create_folder(box, payload.get("name"), payload.get("parent"))
+    except ValueError as exc: raise HTTPException(400, str(exc))
+    except RuntimeError as exc:
+        status = 409 if test_mode_enabled() else 502
+        raise HTTPException(status, str(exc))
+    db.audit("mailbox_folder_created", actor=user["email"], mailbox_id=mailbox_id, folder=folder, parent=payload.get("parent") or "")
+    return {"ok": True, "folder": folder}
 
 
 @app.delete("/api/mailboxes/{mailbox_id}")

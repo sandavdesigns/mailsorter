@@ -54,6 +54,63 @@ def test_mode_enabled():
     return os.getenv("TEST_MODE", "true").strip().lower() not in {"false", "0", "no", "off"}
 
 
+def imap_utf7_encode(value):
+    """Encode a Unicode mailbox name using IMAP modified UTF-7 (RFC 3501)."""
+    result, buffered = [], []
+
+    def flush():
+        if not buffered:
+            return
+        raw = "".join(buffered).encode("utf-16-be")
+        result.append("&" + base64.b64encode(raw).decode("ascii").rstrip("=").replace("/", ",") + "-")
+        buffered.clear()
+
+    for char in str(value):
+        if " " <= char <= "~" and char != "&":
+            flush()
+            result.append(char)
+        elif char == "&":
+            flush()
+            result.append("&-")
+        else:
+            buffered.append(char)
+    flush()
+    return "".join(result)
+
+
+def imap_utf7_decode(value):
+    """Decode an IMAP modified UTF-7 mailbox name for display in the UI."""
+    value, result, position = str(value), [], 0
+    while position < len(value):
+        marker = value.find("&", position)
+        if marker < 0:
+            result.append(value[position:])
+            break
+        result.append(value[position:marker])
+        end = value.find("-", marker)
+        if end < 0:
+            result.append(value[marker:])
+            break
+        encoded = value[marker + 1:end]
+        if not encoded:
+            result.append("&")
+        else:
+            padded = encoded.replace(",", "/") + "=" * (-len(encoded) % 4)
+            try: result.append(base64.b64decode(padded).decode("utf-16-be"))
+            except (ValueError, UnicodeDecodeError): result.append(value[marker:end + 1])
+        position = end + 1
+    return "".join(result)
+
+
+def imap_mailbox_arg(value):
+    value = str(value)
+    decoded_value = imap_utf7_decode(value)
+    # Keep folder values saved by older Mailsorter versions in their already encoded form.
+    encoded = value if decoded_value != value and imap_utf7_encode(decoded_value) == value else imap_utf7_encode(value)
+    encoded = encoded.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{encoded}"'.encode("ascii")
+
+
 def clean_html(value):
     # Preserve common email layout while stripping executable/overlay content. Remote images stay opt-in.
     value = re.sub(r"<\s*(script|style|iframe|object|embed|form)[^>]*>.*?<\s*/\s*\1\s*>", "", value or "", flags=re.I | re.S)
@@ -330,19 +387,53 @@ def test_mailbox_connection(box, password):
     return result
 
 
+def folder_entries(client):
+    status, values = client.list()
+    if status != "OK": raise RuntimeError("IMAP-Ordner konnten nicht gelesen werden")
+    result = []
+    for raw in values or []:
+        line = raw.decode("ascii", errors="replace")
+        # IMAP LIST: flags, hierarchy delimiter and quoted/unquoted mailbox name.
+        match = re.match(r'.*?\s+(?:"([^"]*)"|NIL)\s+(?:"((?:\\.|[^"])*)"|(.*))$', line)
+        if not match:
+            continue
+        delimiter = match.group(1)
+        raw_name = (match.group(2) if match.group(2) is not None else match.group(3) or "").strip()
+        raw_name = raw_name.replace('\\"', '"').replace("\\\\", "\\")
+        if raw_name:
+            result.append({"name": imap_utf7_decode(raw_name), "delimiter": delimiter})
+    return result
+
+
 def list_folders(box):
     client = connect_imap(box)
     try:
-        status, values = client.list()
-        if status != "OK": raise RuntimeError("IMAP-Ordner konnten nicht gelesen werden")
-        result = []
-        for raw in values or []:
-            line = raw.decode(errors="replace")
-            # IMAP LIST: flags, delimiter and quoted/unquoted mailbox name.
-            match = re.match(r'.*?\s+(?:"([^"]*)"|NIL)\s+(?:"([^"]*)"|(.*))$', line)
-            name = (match.group(2) or match.group(3)).strip('"') if match else line.rsplit(" ", 1)[-1].strip('"')
-            if name: result.append(name)
-        return result
+        return [entry["name"] for entry in folder_entries(client)]
+    finally:
+        try: client.logout()
+        except Exception: pass
+
+
+def create_folder(box, name, parent=""):
+    if test_mode_enabled():
+        raise RuntimeError("Testmodus aktiv: Exchange-Ordner wurde nicht angelegt")
+    name, parent = str(name or "").strip(), str(parent or "").strip()
+    if not name or len(name) > 120 or any(c in name for c in "\r\n\0/\\"):
+        raise ValueError("Ungültiger Ordnername; / und \\ sind nicht erlaubt")
+    client = connect_imap(box)
+    try:
+        entries = folder_entries(client)
+        delimiter = next((entry["delimiter"] for entry in entries if entry["delimiter"]), "/")
+        if parent and parent not in {entry["name"] for entry in entries}:
+            raise ValueError("Übergeordneter Ordner wurde nicht gefunden")
+        full_name = f"{parent}{delimiter}{name}" if parent else name
+        if full_name in {entry["name"] for entry in entries}:
+            raise ValueError("Dieser Ordner existiert bereits")
+        status, details = client.create(imap_mailbox_arg(full_name))
+        if status != "OK":
+            reason = " ".join(item.decode(errors="replace") if isinstance(item, bytes) else str(item) for item in details or [])
+            raise RuntimeError(f"Exchange hat den Ordner nicht angelegt: {reason or status}")
+        return full_name
     finally:
         try: client.logout()
         except Exception: pass
@@ -360,9 +451,10 @@ def move_message(message_id, folder, actor="system", rule_id=None):
     try:
         if client.select(msg["folder"], readonly=False)[0] != "OK": raise RuntimeError("Quellordner nicht verfügbar")
         # RFC 6851 MOVE where available, with broadly compatible COPY fallback.
-        status, _ = client.uid("MOVE", msg["uid"], folder)
+        folder_arg = imap_mailbox_arg(folder)
+        status, _ = client.uid("MOVE", msg["uid"], folder_arg)
         if status != "OK":
-            if client.uid("COPY", msg["uid"], folder)[0] != "OK": raise RuntimeError(f"Verschieben nach {folder} fehlgeschlagen")
+            if client.uid("COPY", msg["uid"], folder_arg)[0] != "OK": raise RuntimeError(f"Verschieben nach {folder} fehlgeschlagen")
             client.uid("STORE", msg["uid"], "+FLAGS", "(\\Deleted)")
             client.expunge()
     finally:

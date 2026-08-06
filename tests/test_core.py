@@ -8,7 +8,7 @@ from unittest import mock
 os.environ.setdefault("APP_SECRET", "test-secret-with-at-least-24-characters")
 
 from app import db, exchange, main
-from app.exchange import apply_rules, authenticate_imap_ntlm, clean_html, connect_imap_with_password, connection_error, decoded, forward_message, imap_tls_channel_bindings, message_attachments, message_bodies, move_message, rule_matches, test_mailbox_connection, test_mode_enabled
+from app.exchange import apply_rules, authenticate_imap_ntlm, clean_html, connect_imap_with_password, connection_error, create_folder, decoded, forward_message, imap_mailbox_arg, imap_tls_channel_bindings, imap_utf7_decode, imap_utf7_encode, message_attachments, message_bodies, move_message, rule_matches, test_mailbox_connection, test_mode_enabled
 from app.security import decrypt, encrypt, hash_password, verify_password
 
 
@@ -88,6 +88,29 @@ class SecurityTests(unittest.TestCase):
             self.assertFalse(test_mode_enabled())
         with mock.patch.dict(os.environ, {"TEST_MODE": "unexpected"}, clear=False):
             self.assertTrue(test_mode_enabled())
+
+    def test_test_mode_blocks_exchange_folder_creation(self):
+        with mock.patch.dict(os.environ, {"TEST_MODE": "true"}, clear=False), \
+             mock.patch.object(exchange, "connect_imap") as connect:
+            with self.assertRaisesRegex(RuntimeError, "Testmodus aktiv"):
+                create_folder({"id": 2}, "Rechnungen", "INBOX")
+            connect.assert_not_called()
+
+    def test_exchange_subfolder_creation_supports_umlauts(self):
+        client = mock.MagicMock()
+        client.list.return_value = ("OK", [b'(\\HasChildren) "/" "INBOX"', b'(\\HasNoChildren) "/" "INBOX/Archiv"'])
+        client.create.return_value = ("OK", [b"CREATE completed"])
+        with mock.patch.object(exchange, "test_mode_enabled", return_value=False), \
+             mock.patch.object(exchange, "connect_imap", return_value=client):
+            created = create_folder({"id": 2}, "Prüfung", "INBOX/Archiv")
+        self.assertEqual(created, "INBOX/Archiv/Prüfung")
+        client.create.assert_called_once_with(b'"INBOX/Archiv/Pr&APw-fung"')
+        client.logout.assert_called_once()
+
+    def test_imap_folder_names_roundtrip_modified_utf7(self):
+        name = "INBOX/Prüfung & Ablage 日本語"
+        self.assertEqual(imap_utf7_decode(imap_utf7_encode(name)), name)
+        self.assertEqual(imap_mailbox_arg("INBOX/Pr&APw-fung"), b'"INBOX/Pr&APw-fung"')
 
     def test_automatic_rule_only_logs_in_test_mode(self):
         message = {"id": 7, "mailbox_id": 2, "sender": "billing@example.org", "recipients": "inbox@example.org", "subject": "Rechnung", "text_body": "Test"}
