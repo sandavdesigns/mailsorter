@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Mailsorter</title><link rel="stylesheet" href="/static/style.css"><link rel="stylesheet" href="/static/testmode.css">
+</head>
+<body>
+  <div id="toast"></div>
+  <main id="login" class="login-card">
+    <div class="brand"><span>↗</span><strong>Mailsorter</strong></div>
+    <h1>Willkommen zurück</h1><p class="muted">Firmenpostfächer intelligent verteilen.</p>
+    <form id="loginForm"><label>E-Mail<input name="email" value="admin@local" autocomplete="username" required></label><label>Passwort<input name="password" type="password" autocomplete="current-password" required></label><button>Einloggen</button></form>
+  </main>
+  <div id="app" hidden>
+    <aside>
+      <div class="brand"><span>↗</span><strong>Mailsorter</strong></div>
+      <nav>
+        <button data-view="inbox" class="active">▣ <span>Posteingang</span><b id="newBadge"></b></button>
+        <button data-view="rules">⌘ <span>Regeln</span></button>
+        <button data-view="mailboxes">▤ <span>Postfächer</span></button>
+        <button data-view="users">♙ <span>Benutzer</span></button>
+        <button data-view="audit">◷ <span>Protokoll</span></button>
+      </nav>
+      <div class="account"><div id="avatar"></div><div><strong id="who"></strong><small id="role"></small></div><button id="logout" title="Abmelden">↪</button></div>
+    </aside>
+    <section class="workspace">
+      <header><div><h1 id="viewTitle">Posteingang</h1><p id="viewSubtitle">Alle eingegangenen Nachrichten</p></div><button id="primaryAction" class="primary">+ Neue Regel</button></header>
+      <div id="stats" class="stats"></div>
+      <div id="content"></div>
+    </section>
+  </div>
+  <dialog id="modal"><form method="dialog"><button class="close" value="cancel">×</button></form><div id="modalBody"></div></dialog>
+  <script src="/static/app.js"></script>
+</body></html>

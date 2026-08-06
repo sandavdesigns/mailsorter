@@ -1,0 +1,6 @@
+__pycache__/
+*.py[cod]
+.env
+data/
+.pytest_cache/
+.DS_Store

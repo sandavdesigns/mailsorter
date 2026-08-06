@@ -1,0 +1,18 @@
+services:
+  mailsorter:
+    build: .
+    image: mailsorter:latest
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      APP_SECRET: ${APP_SECRET:?APP_SECRET muss gesetzt sein}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?ADMIN_PASSWORD muss gesetzt sein}
+      SESSION_HTTPS_ONLY: ${SESSION_HTTPS_ONLY:-false}
+      POLL_INTERVAL_SECONDS: ${POLL_INTERVAL_SECONDS:-60}
+      TZ: ${TZ:-Europe/Berlin}
+    volumes:
+      - mailsorter_data:/data
+
+volumes:
+  mailsorter_data:
