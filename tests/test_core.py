@@ -86,6 +86,10 @@ class SecurityTests(unittest.TestCase):
     def test_test_mode_requires_explicit_false(self):
         with mock.patch.dict(os.environ, {"TEST_MODE": "false"}, clear=False):
             self.assertFalse(test_mode_enabled())
+        with mock.patch.dict(os.environ, {"TEST_MODE": '"false"'}, clear=False):
+            self.assertFalse(test_mode_enabled())
+        with mock.patch.dict(os.environ, {"TEST_MODE": "'off'"}, clear=False):
+            self.assertFalse(test_mode_enabled())
         with mock.patch.dict(os.environ, {"TEST_MODE": "unexpected"}, clear=False):
             self.assertTrue(test_mode_enabled())
 

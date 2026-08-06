@@ -51,7 +51,8 @@ CSS_SANITIZER = CSSSanitizer(allowed_css_properties={
 
 def test_mode_enabled():
     # Fail safe: missing or malformed values keep all external mutations disabled.
-    return os.getenv("TEST_MODE", "true").strip().lower() not in {"false", "0", "no", "off"}
+    value = os.getenv("TEST_MODE", "true").strip().strip("\"'").strip().lower()
+    return value not in {"false", "0", "no", "off"}
 
 
 def imap_utf7_encode(value):
