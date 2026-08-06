@@ -29,7 +29,7 @@ docker compose pull
 docker compose up -d
 ```
 
-Danach ist Mailsorter unter `http://SERVER:8080` erreichbar. Die erste Anmeldung erfolgt mit `admin@local` und dem in `ADMIN_PASSWORD` gesetzten Passwort.
+Danach ist Mailsorter unter `http://SERVER:MAILSORTER_PORT` erreichbar. Ohne abweichende Einstellung ist das `http://SERVER:8080`. Die erste Anmeldung erfolgt mit `admin@local` und dem in `ADMIN_PASSWORD` gesetzten Passwort.
 
 Wichtig: `APP_SECRET` nach dem ersten Start nicht ändern. Damit werden die Postfachkennwörter verschlüsselt. Bei Verlust oder Änderung können vorhandene Kennwörter nicht mehr entschlüsselt werden.
 
@@ -40,9 +40,10 @@ Wichtig: `APP_SECRET` nach dem ersten Start nicht ändern. Damit werden die Post
 3. Unter **Environment variables** mindestens diese Werte setzen:
    - `APP_SECRET`: lange, zufällige Zeichenfolge (mindestens 24 Zeichen)
    - `ADMIN_PASSWORD`: sicheres initiales Admin-Passwort (mindestens 10 Zeichen)
+   - `MAILSORTER_PORT`: freier Port auf dem Docker-Host, beispielsweise `8081`
    - `SESSION_HTTPS_ONLY=true`, sobald der Zugriff über HTTPS erfolgt
    - optional `POLL_INTERVAL_SECONDS=60` und `TZ=Europe/Berlin`
-4. Stack deployen und TCP-Port 8080 intern zum Reverse Proxy freigeben.
+4. Stack deployen und den mit `MAILSORTER_PORT` festgelegten TCP-Port zum Reverse Proxy freigeben. Der interne Container-Port bleibt immer 8080.
 5. Für Produktion TLS am Reverse Proxy terminieren und `SESSION_HTTPS_ONLY=true` setzen.
 
 Der Portainer-Server baut Mailsorter nicht selbst. Bei jedem Push auf `main` erzeugt GitHub Actions ein Multi-Arch-Image für AMD64 und ARM64 und veröffentlicht es als `ghcr.io/sandavdesigns/mailsorter:latest`. Portainer lädt nur dieses fertige Image. Dadurch wird auf dem Docker-Server kein funktionierender BuildKit-Worker benötigt.
