@@ -2,7 +2,7 @@
 <html lang="de">
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Mailsorter</title><link rel="stylesheet" href="/static/style.css?v=__ASSET_VERSION__"><link rel="stylesheet" href="/static/testmode.css?v=__ASSET_VERSION__"><link rel="stylesheet" href="/static/safemode.css?v=__ASSET_VERSION__"><link rel="stylesheet" href="/static/mailbox.css?v=__ASSET_VERSION__"><link rel="stylesheet" href="/static/exchange-help.css?v=__ASSET_VERSION__"><link rel="stylesheet" href="/static/mail-render.css?v=__ASSET_VERSION__"><link rel="stylesheet" href="/static/version.css?v=__ASSET_VERSION__"><link rel="stylesheet" href="/static/inbox-compact.css?v=__ASSET_VERSION__">
+  <title>Mailsorter</title><link rel="stylesheet" href="/static/style.css?v=__ASSET_VERSION__"><link rel="stylesheet" href="/static/testmode.css?v=__ASSET_VERSION__"><link rel="stylesheet" href="/static/safemode.css?v=__ASSET_VERSION__"><link rel="stylesheet" href="/static/mailbox.css?v=__ASSET_VERSION__"><link rel="stylesheet" href="/static/exchange-help.css?v=__ASSET_VERSION__"><link rel="stylesheet" href="/static/mail-render.css?v=__ASSET_VERSION__"><link rel="stylesheet" href="/static/version.css?v=__ASSET_VERSION__"><link rel="stylesheet" href="/static/sw-theme.css?v=__ASSET_VERSION__"><link rel="stylesheet" href="/static/inbox-compact.css?v=__ASSET_VERSION__">
 </head>
 <body>
   <div id="toast"></div>
@@ -26,7 +26,7 @@
     </aside>
     <section class="workspace">
       <div id="modeBanner" class="mode-banner" hidden><strong>TESTMODUS AKTIV</strong><span>Regeln werden nur simuliert. Für den Livegang in Portainer TEST_MODE=false setzen und den Stack neu deployen.<span id="modeValue"></span></span></div>
-      <header><div><h1 id="viewTitle">Posteingang</h1><p id="viewSubtitle">Alle eingegangenen Nachrichten</p></div><button id="primaryAction" class="primary">+ Neue Regel</button></header>
+      <header><div><h1 id="viewTitle">Posteingang</h1><p id="viewSubtitle">Alle eingegangenen Nachrichten</p></div><div class="top-actions"><button id="primaryAction" class="primary">+ Neue Regel</button><div class="top-user"><div id="topAvatar"></div><div><strong id="topWho"></strong><small id="topRole"></small></div></div><button id="topLogout" class="secondary" title="Abmelden">Abmelden</button></div></header>
       <div id="stats" class="stats"></div>
       <div id="content"></div>
     </section>
