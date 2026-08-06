@@ -8,7 +8,7 @@ from unittest import mock
 os.environ.setdefault("APP_SECRET", "test-secret-with-at-least-24-characters")
 
 from app import db, exchange, main
-from app.exchange import apply_rules, authenticate_imap_ntlm, clean_html, connect_imap_with_password, connection_error, create_folder, decoded, forward_message, imap_mailbox_arg, imap_tls_channel_bindings, imap_utf7_decode, imap_utf7_encode, message_attachments, message_bodies, move_message, rule_matches, test_mailbox_connection, test_mode_enabled
+from app.exchange import apply_rules, authenticate_imap_ntlm, clean_html, connect_imap_with_password, connection_error, create_folder, decoded, forward_message, imap_mailbox_arg, imap_tls_channel_bindings, imap_utf7_decode, imap_utf7_encode, message_attachments, message_bodies, move_message, rule_matches, test_mailbox_connection, test_mode_enabled, test_mode_value
 from app.security import decrypt, encrypt, hash_password, verify_password
 
 
@@ -86,9 +86,12 @@ class SecurityTests(unittest.TestCase):
     def test_test_mode_requires_explicit_false(self):
         with mock.patch.dict(os.environ, {"TEST_MODE": "false"}, clear=False):
             self.assertFalse(test_mode_enabled())
+            self.assertEqual(test_mode_value(), "false")
         with mock.patch.dict(os.environ, {"TEST_MODE": '"false"'}, clear=False):
             self.assertFalse(test_mode_enabled())
         with mock.patch.dict(os.environ, {"TEST_MODE": "'off'"}, clear=False):
+            self.assertFalse(test_mode_enabled())
+        with mock.patch.dict(os.environ, {"TEST_MODE": "live"}, clear=False):
             self.assertFalse(test_mode_enabled())
         with mock.patch.dict(os.environ, {"TEST_MODE": "unexpected"}, clear=False):
             self.assertTrue(test_mode_enabled())

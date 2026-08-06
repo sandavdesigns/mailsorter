@@ -13,7 +13,7 @@ from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import db
-from .exchange import create_folder, fetch_mailbox, forward_message, list_folders, move_message, rule_matches, test_mailbox_connection, test_mode_enabled
+from .exchange import create_folder, fetch_mailbox, forward_message, list_folders, move_message, rule_matches, test_mailbox_connection, test_mode_enabled, test_mode_value
 from .security import decrypt, encrypt, hash_password, new_session, token_hash, verify_password
 
 STATIC = Path(__file__).parent / "static"
@@ -130,7 +130,10 @@ def dashboard(session: str | None = Cookie(None)):
 @app.get("/api/system")
 def system_status(session: str | None = Cookie(None)):
     require_user(session)
-    return {"test_mode": test_mode_enabled()}
+    return {
+        "test_mode": test_mode_enabled(),
+        "test_mode_value": test_mode_value(),
+    }
 
 
 @app.get("/api/messages")
