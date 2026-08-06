@@ -1,3 +1,4 @@
+import email
 import os
 import unittest
 from unittest import mock
@@ -5,7 +6,7 @@ from unittest import mock
 os.environ.setdefault("APP_SECRET", "test-secret-with-at-least-24-characters")
 
 from app import exchange
-from app.exchange import apply_rules, authenticate_imap_ntlm, clean_html, connect_imap_with_password, connection_error, forward_message, imap_tls_channel_bindings, move_message, rule_matches, test_mailbox_connection, test_mode_enabled
+from app.exchange import apply_rules, authenticate_imap_ntlm, clean_html, connect_imap_with_password, connection_error, decoded, forward_message, imap_tls_channel_bindings, message_bodies, move_message, rule_matches, test_mailbox_connection, test_mode_enabled
 from app.security import decrypt, encrypt, hash_password, verify_password
 
 
@@ -21,10 +22,35 @@ class SecurityTests(unittest.TestCase):
         self.assertEqual(decrypt(encrypted), "exchange-password")
 
     def test_html_sanitization(self):
-        result = clean_html('<p>Hallo</p><script>alert(1)</script><img src="https://tracker/x">')
+        result = clean_html('<p style="color:#123;position:fixed">Hallo</p><script>alert(1)</script><a href="data:text/html,bad">bad</a><img src="https://tracker/x">')
         self.assertIn("Hallo", result)
         self.assertNotIn("script", result)
-        self.assertNotIn("src=", result)
+        self.assertNotIn("position", result)
+        self.assertIn('style="color:#123;"', result)
+        self.assertIn('data-external-src="https://tracker/x"', result)
+        self.assertNotIn('<img src=', result)
+        self.assertNotIn('href="data:', result)
+
+    def test_message_charset_falls_back_to_windows_1252(self):
+        msg = email.message_from_bytes(
+            b"Content-Type: text/plain\r\nContent-Transfer-Encoding: 8bit\r\n\r\nGr\xfc\xdfe aus K\xf6ln"
+        )
+        text, html = message_bodies(msg)
+        self.assertEqual(text, "Grüße aus Köln")
+        self.assertIn("Grüße aus Köln", html)
+        self.assertEqual(decoded("=?windows-1252?Q?Gr=FC=DFe_aus_K=F6ln?="), "Grüße aus Köln")
+
+    def test_inline_cid_images_are_embedded_and_remote_images_are_opt_in(self):
+        msg = email.message.EmailMessage()
+        msg.set_content("Grüße")
+        msg.add_alternative('<p style="font-family:Arial">Grüße</p><img src="cid:logo"><img src="https://example.org/tracker.png">', subtype="html")
+        msg.get_payload()[1].add_related(b"png-data", maintype="image", subtype="png", cid="<logo>")
+        text, html = message_bodies(msg)
+        self.assertEqual(text.strip(), "Grüße")
+        self.assertIn("Grüße", html)
+        self.assertIn("src=\"data:image/png;base64,", html)
+        self.assertIn('data-external-src="https://example.org/tracker.png"', html)
+        self.assertNotIn('<img src="https://example.org', html)
 
     def test_test_mode_is_fail_safe_and_blocks_external_actions(self):
         with mock.patch.dict(os.environ, {}, clear=True):

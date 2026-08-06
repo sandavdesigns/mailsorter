@@ -52,7 +52,8 @@ def init_db():
           id INTEGER PRIMARY KEY, mailbox_id INTEGER NOT NULL REFERENCES mailboxes(id) ON DELETE CASCADE,
           uid TEXT NOT NULL, message_id TEXT, sender TEXT NOT NULL, recipients TEXT NOT NULL,
           subject TEXT NOT NULL, received_at TEXT, text_body TEXT NOT NULL DEFAULT '',
-          html_body TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'new',
+          html_body TEXT NOT NULL DEFAULT '', parser_version INTEGER NOT NULL DEFAULT 2,
+          status TEXT NOT NULL DEFAULT 'new',
           assigned_to INTEGER REFERENCES users(id), matched_rule_id INTEGER,
           created_at TEXT NOT NULL, UNIQUE(mailbox_id, uid)
         );
@@ -91,6 +92,10 @@ def init_db():
             db.execute("ALTER TABLE mailboxes ADD COLUMN smtp_username TEXT")
         if "imap_auth_mode" not in mailbox_columns:
             db.execute("ALTER TABLE mailboxes ADD COLUMN imap_auth_mode TEXT NOT NULL DEFAULT 'auto'")
+        message_columns = {r[1] for r in db.execute("PRAGMA table_info(messages)")}
+        if "parser_version" not in message_columns:
+            # Existing messages are refreshed from Exchange on their next mailbox sync.
+            db.execute("ALTER TABLE messages ADD COLUMN parser_version INTEGER NOT NULL DEFAULT 1")
         db.execute("UPDATE mailboxes SET imap_username=COALESCE(imap_username,username),smtp_username=COALESCE(smtp_username,username)")
 
 

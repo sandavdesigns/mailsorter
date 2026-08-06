@@ -1,3 +1,4 @@
+import base64
 import email
 import hashlib
 import imaplib
@@ -11,17 +12,41 @@ from email.utils import parsedate_to_datetime
 
 import bleach
 import spnego
+from bleach.css_sanitizer import CSSSanitizer
 from cryptography import x509
 from spnego.channel_bindings import GssChannelBindings
 
 from . import db
 from .security import decrypt
 
+MESSAGE_PARSER_VERSION = 2
+MAX_INLINE_IMAGE_BYTES = 5 * 1024 * 1024
+MAX_INLINE_IMAGES_BYTES = 12 * 1024 * 1024
+SAFE_INLINE_IMAGE_TYPES = {"image/png", "image/jpeg", "image/gif", "image/webp", "image/bmp"}
 ALLOWED_TAGS = set(bleach.sanitizer.ALLOWED_TAGS) | {
-    "p", "br", "div", "span", "table", "thead", "tbody", "tr", "td", "th",
-    "h1", "h2", "h3", "h4", "blockquote", "pre", "hr", "img"
+    "p", "br", "div", "span", "table", "thead", "tbody", "tfoot", "tr", "td", "th",
+    "caption", "colgroup", "col", "h1", "h2", "h3", "h4", "h5", "h6", "blockquote",
+    "pre", "hr", "img", "center", "font", "small", "big", "sup", "sub", "section"
 }
-ALLOWED_ATTRS = {"a": ["href", "title"], "img": ["alt", "width", "height"], "td": ["colspan", "rowspan"]}
+ALLOWED_ATTRS = {
+    "*": ["style", "title", "lang", "dir", "class"],
+    "a": ["href", "title", "target"],
+    "img": ["src", "data-external-src", "alt", "title", "width", "height", "border", "align"],
+    "table": ["width", "height", "border", "cellpadding", "cellspacing", "align", "bgcolor", "role"],
+    "td": ["colspan", "rowspan", "width", "height", "align", "valign", "bgcolor"],
+    "th": ["colspan", "rowspan", "width", "height", "align", "valign", "bgcolor"],
+    "col": ["span", "width"],
+    "font": ["color", "face", "size"],
+}
+CSS_SANITIZER = CSSSanitizer(allowed_css_properties={
+    "color", "background-color", "font", "font-family", "font-size", "font-style", "font-weight",
+    "line-height", "letter-spacing", "text-align", "text-decoration", "text-indent", "text-transform",
+    "white-space", "word-break", "overflow-wrap", "vertical-align", "width", "min-width", "max-width",
+    "height", "min-height", "max-height", "margin", "margin-top", "margin-right", "margin-bottom",
+    "margin-left", "padding", "padding-top", "padding-right", "padding-bottom", "padding-left", "border",
+    "border-top", "border-right", "border-bottom", "border-left", "border-color", "border-style",
+    "border-width", "border-collapse", "border-spacing", "table-layout", "display", "float", "clear",
+})
 
 
 def test_mode_enabled():
@@ -30,16 +55,64 @@ def test_mode_enabled():
 
 
 def clean_html(value):
-    # Remote images and active content are removed; links may only use safe protocols.
+    # Preserve common email layout while stripping executable/overlay content. Remote images stay opt-in.
     value = re.sub(r"<\s*(script|style|iframe|object|embed|form)[^>]*>.*?<\s*/\s*\1\s*>", "", value or "", flags=re.I | re.S)
-    return bleach.clean(value or "", tags=ALLOWED_TAGS, attributes=ALLOWED_ATTRS, protocols={"http", "https", "mailto"}, strip=True)
+    cleaned = bleach.clean(
+        value or "", tags=ALLOWED_TAGS, attributes=ALLOWED_ATTRS,
+        protocols={"http", "https", "mailto", "data"}, css_sanitizer=CSS_SANITIZER, strip=True,
+    )
+    # The data protocol is needed for inline images, never for clickable links.
+    cleaned = re.sub(r'(<a\b[^>]*?)\s+href="data:[^"]*"', r'\1', cleaned, flags=re.I)
+    # Bleach normalizes attributes to double quotes, allowing remote sources to be parked safely.
+    return re.sub(r'(<img\b[^>]*?)\s+src="(https?://[^"]+)"', r'\1 data-external-src="\2"', cleaned, flags=re.I)
 
 
 def decoded(value):
     try:
         return str(make_header(decode_header(value or "")))
     except Exception:
-        return value or ""
+        chunks = []
+        for chunk, charset in decode_header(value or ""):
+            chunks.append(decode_bytes(chunk, charset) if isinstance(chunk, bytes) else chunk)
+        return "".join(chunks)
+
+
+def decode_bytes(payload, declared_charset=None):
+    candidates = [declared_charset, "utf-8", "windows-1252", "iso-8859-1"]
+    for charset in dict.fromkeys(c for c in candidates if c):
+        try:
+            return payload.decode(charset)
+        except (LookupError, UnicodeDecodeError):
+            continue
+    return payload.decode("utf-8", errors="replace")
+
+
+def decode_part_text(part):
+    return decode_bytes(part.get_payload(decode=True) or b"", part.get_content_charset())
+
+
+def inline_image_sources(msg):
+    sources, total = {}, 0
+    for part in msg.walk():
+        content_id = (part.get("Content-ID") or "").strip().strip("<>").lower()
+        content_type = part.get_content_type().lower()
+        if not content_id or content_type not in SAFE_INLINE_IMAGE_TYPES:
+            continue
+        payload = part.get_payload(decode=True) or b""
+        if not payload or len(payload) > MAX_INLINE_IMAGE_BYTES or total + len(payload) > MAX_INLINE_IMAGES_BYTES:
+            continue
+        total += len(payload)
+        sources[content_id] = f"data:{content_type};base64,{base64.b64encode(payload).decode('ascii')}"
+    return sources
+
+
+def embed_inline_images(value, msg):
+    sources = inline_image_sources(msg)
+
+    def replace(match):
+        return sources.get(match.group(1).strip().strip("<>").lower(), match.group(0))
+
+    return re.sub(r"cid:([^\s\"'<>]+)", replace, value or "", flags=re.I)
 
 
 def message_bodies(msg):
@@ -51,13 +124,11 @@ def message_bodies(msg):
         ctype = part.get_content_type()
         if ctype not in ("text/plain", "text/html"):
             continue
-        payload = part.get_payload(decode=True) or b""
-        charset = part.get_content_charset() or "utf-8"
-        value = payload.decode(charset, errors="replace")
+        value = decode_part_text(part)
         if ctype == "text/plain" and not text:
             text = value
         elif ctype == "text/html" and not html:
-            html = clean_html(value)
+            html = clean_html(embed_inline_images(value, msg))
     if not html and text:
         html = "<pre>" + bleach.clean(text) + "</pre>"
     return text, html
@@ -264,7 +335,8 @@ def fetch_mailbox(box):
             raise RuntimeError("IMAP-Suche fehlgeschlagen")
         for uid_b in data[0].split()[-500:]:
             uid = uid_b.decode()
-            if db.row("SELECT id FROM messages WHERE mailbox_id=? AND uid=?", (box["id"], uid)):
+            existing = db.row("SELECT id,parser_version FROM messages WHERE mailbox_id=? AND uid=?", (box["id"], uid))
+            if existing and int(existing.get("parser_version") or 1) >= MESSAGE_PARSER_VERSION:
                 continue
             status, raw = client.uid("fetch", uid_b, "(RFC822)")
             if status != "OK" or not raw or not isinstance(raw[0], tuple):
@@ -275,10 +347,16 @@ def fetch_mailbox(box):
                 received = parsedate_to_datetime(msg.get("Date")).isoformat() if msg.get("Date") else db.now_iso()
             except Exception:
                 received = db.now_iso()
+            values = (decoded(msg.get("Message-ID")), decoded(msg.get("From")), decoded(msg.get("To")), decoded(msg.get("Subject")) or "(Ohne Betreff)", received, text, html)
+            if existing:
+                db.execute("""UPDATE messages SET message_id=?,sender=?,recipients=?,subject=?,received_at=?,text_body=?,html_body=?,parser_version=? WHERE id=?""",
+                           (*values, MESSAGE_PARSER_VERSION, existing["id"]))
+                db.audit("message_rendering_refreshed", mailbox_id=box["id"], message_id=existing["id"])
+                continue
             message_id = db.execute("""
-              INSERT OR IGNORE INTO messages(mailbox_id,uid,message_id,sender,recipients,subject,received_at,text_body,html_body,created_at)
-              VALUES(?,?,?,?,?,?,?,?,?,?)
-            """, (box["id"], uid, decoded(msg.get("Message-ID")), decoded(msg.get("From")), decoded(msg.get("To")), decoded(msg.get("Subject")) or "(Ohne Betreff)", received, text, html, db.now_iso()))
+              INSERT OR IGNORE INTO messages(mailbox_id,uid,message_id,sender,recipients,subject,received_at,text_body,html_body,parser_version,created_at)
+              VALUES(?,?,?,?,?,?,?,?,?,?,?)
+            """, (box["id"], uid, *values, MESSAGE_PARSER_VERSION, db.now_iso()))
             if message_id:
                 db.audit("message_received", mailbox_id=box["id"], message_id=message_id, subject=decoded(msg.get("Subject")))
                 apply_rules(message_id)

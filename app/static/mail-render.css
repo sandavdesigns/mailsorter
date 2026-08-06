@@ -1,0 +1,13 @@
+.mail-frame {
+  width: 100%;
+  height: max(520px, 62vh);
+}
+
+.image-note {
+  margin: -9px 0 12px;
+  padding: 9px 11px;
+  border-radius: 8px;
+  background: #fff7dc;
+  color: #725500;
+  font-size: 12px;
+}

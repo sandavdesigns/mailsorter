@@ -2,5 +2,6 @@ fastapi==0.116.1
 uvicorn[standard]==0.35.0
 python-multipart==0.0.20
 bleach==6.2.0
+tinycss2==1.4.0
 cryptography==45.0.6
 pyspnego==0.12.1
