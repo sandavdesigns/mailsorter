@@ -392,6 +392,57 @@ class SecurityTests(unittest.TestCase):
         with self.assertRaisesRegex(Exception, "Archivierung"):
             main.normalized_rule(payload)
 
+    def test_apply_saved_rule_to_existing_messages_is_dry_run_in_test_mode(self):
+        with tempfile.TemporaryDirectory() as temp_dir, \
+             mock.patch.object(db, "DATA_DIR", Path(temp_dir)), \
+             mock.patch.object(db, "DB_PATH", Path(temp_dir) / "test.sqlite3"):
+            db.init_db()
+            mailbox_id = db.execute("""INSERT INTO mailboxes(name,email,imap_host,smtp_host,username,password_enc,folder,active,created_at)
+              VALUES(?,?,?,?,?,?,?,?,?)""", ("Zentrale", "zentrale@example.org", "imap", "smtp", "svc", "encrypted", "INBOX", 1, db.now_iso()))
+            rule_id = db.execute("""INSERT INTO rules(name,mailbox_id,field,operator,value,action,target_email,priority,active,stop_processing,created_at)
+              VALUES(?,?,?,?,?,?,?,?,?,?,?)""", ("Rechnungen", mailbox_id, "subject", "contains", "Rechnung", "forward", "team@example.org", 100, 1, 1, db.now_iso()))
+            db.execute("""INSERT INTO messages(mailbox_id,uid,sender,recipients,subject,received_at,text_body,html_body,created_at)
+              VALUES(?,?,?,?,?,?,?,?,?)""", (mailbox_id, "1", "a@example.org", "zentrale@example.org", "Rechnung 1", db.now_iso(), "Text", "<p>Text</p>", db.now_iso()))
+            db.execute("""INSERT INTO messages(mailbox_id,uid,sender,recipients,subject,received_at,text_body,html_body,matched_rule_id,created_at)
+              VALUES(?,?,?,?,?,?,?,?,?,?)""", (mailbox_id, "2", "b@example.org", "zentrale@example.org", "Rechnung 2", db.now_iso(), "Text", "<p>Text</p>", rule_id, db.now_iso()))
+            with mock.patch.dict(os.environ, {"TEST_MODE": "true"}, clear=False), \
+                 mock.patch.object(main, "require_user", return_value={"email": "editor@example.org"}), \
+                 mock.patch.object(main, "forward_message") as forward, \
+                 mock.patch.object(main, "move_message") as move:
+                result = main.apply_rule_to_existing(rule_id, session=None)
+            self.assertTrue(result["dry_run"])
+            self.assertEqual(result["matched"], 1)
+            self.assertEqual(result["applied"], 0)
+            forward.assert_not_called()
+            move.assert_not_called()
+            self.assertIsNotNone(db.row("SELECT * FROM audit_log WHERE action='rule_apply_test'"))
+
+    def test_apply_saved_rule_to_existing_messages_executes_live_once(self):
+        with tempfile.TemporaryDirectory() as temp_dir, \
+             mock.patch.object(db, "DATA_DIR", Path(temp_dir)), \
+             mock.patch.object(db, "DB_PATH", Path(temp_dir) / "test.sqlite3"):
+            db.init_db()
+            mailbox_id = db.execute("""INSERT INTO mailboxes(name,email,imap_host,smtp_host,username,password_enc,folder,active,created_at)
+              VALUES(?,?,?,?,?,?,?,?,?)""", ("Zentrale", "zentrale@example.org", "imap", "smtp", "svc", "encrypted", "INBOX", 1, db.now_iso()))
+            rule_id = db.execute("""INSERT INTO rules(name,mailbox_id,field,operator,value,action,target_email,post_forward_folder,priority,active,stop_processing,created_at)
+              VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""", ("Rechnungen", mailbox_id, "subject", "contains", "Rechnung", "forward", "team@example.org", "INBOX/Archiv", 100, 1, 1, db.now_iso()))
+            message_id = db.execute("""INSERT INTO messages(mailbox_id,uid,sender,recipients,subject,received_at,text_body,html_body,created_at)
+              VALUES(?,?,?,?,?,?,?,?,?)""", (mailbox_id, "1", "a@example.org", "zentrale@example.org", "Rechnung 1", db.now_iso(), "Text", "<p>Text</p>", db.now_iso()))
+            db.execute("""INSERT INTO messages(mailbox_id,uid,sender,recipients,subject,received_at,text_body,html_body,matched_rule_id,created_at)
+              VALUES(?,?,?,?,?,?,?,?,?,?)""", (mailbox_id, "2", "b@example.org", "zentrale@example.org", "Rechnung 2", db.now_iso(), "Text", "<p>Text</p>", rule_id, db.now_iso()))
+            with mock.patch.object(main, "test_mode_enabled", return_value=False), \
+                 mock.patch.object(main, "require_user", return_value={"email": "editor@example.org"}), \
+                 mock.patch.object(main, "forward_message") as forward, \
+                 mock.patch.object(main, "move_message") as move:
+                result = main.apply_rule_to_existing(rule_id, session=None)
+            self.assertFalse(result["dry_run"])
+            self.assertEqual(result["matched"], 1)
+            self.assertEqual(result["applied"], 1)
+            forward.assert_called_once_with(message_id, "team@example.org", "editor@example.org", rule_id, None)
+            move.assert_called_once_with(message_id, "INBOX/Archiv", "editor@example.org", rule_id)
+            self.assertEqual(db.row("SELECT matched_rule_id FROM messages WHERE id=?", (message_id,))["matched_rule_id"], rule_id)
+            self.assertIsNotNone(db.row("SELECT * FROM audit_log WHERE action='rule_applied_existing'"))
+
     def test_imap_auto_falls_back_to_ntlm(self):
         settings = {"imap_host": "exchange.example.org", "imap_port": 993, "imap_ssl": True, "imap_username": "DOMAIN\\svc", "username": "DOMAIN\\svc", "imap_auth_mode": "auto"}
         login_client, ntlm_client = mock.MagicMock(), mock.MagicMock()
