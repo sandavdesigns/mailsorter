@@ -87,6 +87,26 @@ def require_admin(session):
     return user
 
 
+def mailbox_filter(user, alias="m"):
+    if user.get("role") == "admin" or "id" not in user:
+        return "1=1", []
+    return f"{alias}.mailbox_id IN (SELECT mailbox_id FROM mailbox_permissions WHERE user_id=?)", [user["id"]]
+
+
+def mailbox_table_filter(user, alias="b"):
+    if user.get("role") == "admin" or "id" not in user:
+        return "1=1", []
+    return f"{alias}.id IN (SELECT mailbox_id FROM mailbox_permissions WHERE user_id=?)", [user["id"]]
+
+
+def ensure_mailbox_access(user, mailbox_id):
+    if user.get("role") == "admin" or "id" not in user:
+        return
+    allowed = db.row("SELECT 1 ok FROM mailbox_permissions WHERE mailbox_id=? AND user_id=?", (mailbox_id, user["id"]))
+    if not allowed:
+        raise HTTPException(403, "Kein Zugriff auf dieses Postfach")
+
+
 @app.get("/", response_class=HTMLResponse)
 def index():
     return FileResponse(STATIC / "index.html")
@@ -124,12 +144,16 @@ def me(session: str | None = Cookie(None)):
 
 @app.get("/api/dashboard")
 def dashboard(session: str | None = Cookie(None)):
-    require_user(session)
+    user = require_user(session)
+    msg_filter, msg_args = mailbox_filter(user, "m")
+    box_filter, box_args = mailbox_table_filter(user, "b")
+    rule_filter = "1=1" if user.get("role") == "admin" or "id" not in user else "(mailbox_id IS NOT NULL AND mailbox_id IN (SELECT mailbox_id FROM mailbox_permissions WHERE user_id=?))"
+    rule_args = [] if user.get("role") == "admin" or "id" not in user else [user["id"]]
     return {
-        "new": db.row("SELECT count(*) n FROM messages WHERE status='new'")["n"],
-        "assigned": db.row("SELECT count(*) n FROM messages WHERE status='assigned'")["n"],
-        "mailboxes": db.row("SELECT count(*) n FROM mailboxes WHERE active=1")["n"],
-        "rules": db.row("SELECT count(*) n FROM rules WHERE active=1")["n"],
+        "new": db.row(f"SELECT count(*) n FROM messages m WHERE status='new' AND {msg_filter}", msg_args)["n"],
+        "assigned": db.row(f"SELECT count(*) n FROM messages m WHERE status='assigned' AND {msg_filter}", msg_args)["n"],
+        "mailboxes": db.row(f"SELECT count(*) n FROM mailboxes b WHERE active=1 AND {box_filter}", box_args)["n"],
+        "rules": db.row(f"SELECT count(*) n FROM rules WHERE active=1 AND {rule_filter}", rule_args)["n"],
         "test_mode": test_mode_enabled(),
     }
 
@@ -160,11 +184,13 @@ def update_system(payload: dict = Body(...), session: str | None = Cookie(None))
 
 @app.get("/api/messages")
 def messages(status: str = "", mailbox_id: int | None = None, q: str = "", session: str | None = Cookie(None)):
-    require_user(session)
+    user = require_user(session)
     where, args = ["1=1"], []
+    access, access_args = mailbox_filter(user, "m"); where.append(access); args.extend(access_args)
     if status:
         where.append("m.status=?"); args.append(status)
     if mailbox_id:
+        ensure_mailbox_access(user, mailbox_id)
         where.append("m.mailbox_id=?"); args.append(mailbox_id)
     if q:
         where.append("(m.subject LIKE ? OR m.sender LIKE ? OR m.text_body LIKE ?)"); args.extend([f"%{q}%"] * 3)
@@ -176,10 +202,11 @@ def messages(status: str = "", mailbox_id: int | None = None, q: str = "", sessi
 
 @app.get("/api/messages/{message_id}")
 def message(message_id: int, session: str | None = Cookie(None)):
-    require_user(session)
+    user = require_user(session)
     result = db.row("""SELECT m.*,b.name mailbox_name,u.name assigned_name FROM messages m
       JOIN mailboxes b ON b.id=m.mailbox_id LEFT JOIN users u ON u.id=m.assigned_to WHERE m.id=?""", (message_id,))
     if not result: raise HTTPException(404, "Mail nicht gefunden")
+    ensure_mailbox_access(user, result["mailbox_id"])
     result["attachments"] = db.rows("""SELECT id,filename,content_type,size,stored FROM attachments
       WHERE message_id=? ORDER BY id""", (message_id,))
     return result
@@ -187,10 +214,12 @@ def message(message_id: int, session: str | None = Cookie(None)):
 
 @app.get("/api/attachments/{attachment_id}/download")
 def download_attachment(attachment_id: int, session: str | None = Cookie(None)):
-    require_user(session)
-    attachment = db.row("""SELECT a.* FROM attachments a JOIN messages m ON m.id=a.message_id
+    user = require_user(session)
+    attachment = db.row("""SELECT a.*,m.mailbox_id FROM attachments a JOIN messages m ON m.id=a.message_id
       WHERE a.id=?""", (attachment_id,))
     if not attachment: raise HTTPException(404, "Anlage nicht gefunden")
+    if "mailbox_id" in attachment:
+        ensure_mailbox_access(user, attachment["mailbox_id"])
     if not attachment["stored"] or attachment["content"] is None:
         raise HTTPException(409, "Anlage überschreitet das konfigurierte Speicherlimit und kann nicht heruntergeladen werden")
     filename = attachment["filename"]
@@ -205,6 +234,9 @@ def download_attachment(attachment_id: int, session: str | None = Cookie(None)):
 @app.post("/api/messages/{message_id}/assign")
 def assign(message_id: int, payload: dict = Body(...), session: str | None = Cookie(None)):
     user = require_user(session)
+    msg = db.row("SELECT mailbox_id FROM messages WHERE id=?", (message_id,))
+    if not msg: raise HTTPException(404, "Mail nicht gefunden")
+    ensure_mailbox_access(user, msg["mailbox_id"])
     if test_mode_enabled():
         raise HTTPException(423, "Testmodus aktiv: Mail wurde nicht weitergeleitet")
     target_user = None
@@ -226,6 +258,9 @@ def assign(message_id: int, payload: dict = Body(...), session: str | None = Coo
 @app.post("/api/messages/{message_id}/status")
 def set_status(message_id: int, payload: dict = Body(...), session: str | None = Cookie(None)):
     user = require_user(session)
+    msg = db.row("SELECT mailbox_id FROM messages WHERE id=?", (message_id,))
+    if not msg: raise HTTPException(404, "Mail nicht gefunden")
+    ensure_mailbox_access(user, msg["mailbox_id"])
     status = payload.get("status")
     if status not in {"new", "assigned", "done", "ignored"}: raise HTTPException(400, "Ungültiger Status")
     db.execute("UPDATE messages SET status=? WHERE id=?", (status, message_id))
@@ -236,6 +271,9 @@ def set_status(message_id: int, payload: dict = Body(...), session: str | None =
 @app.post("/api/messages/{message_id}/move")
 def move(message_id: int, payload: dict = Body(...), session: str | None = Cookie(None)):
     user = require_user(session)
+    msg = db.row("SELECT mailbox_id FROM messages WHERE id=?", (message_id,))
+    if not msg: raise HTTPException(404, "Mail nicht gefunden")
+    ensure_mailbox_access(user, msg["mailbox_id"])
     if test_mode_enabled():
         raise HTTPException(423, "Testmodus aktiv: Exchange-Mail wurde nicht verschoben")
     try: move_message(message_id, payload.get("folder"), user["email"])
@@ -245,12 +283,13 @@ def move(message_id: int, payload: dict = Body(...), session: str | None = Cooki
 
 @app.get("/api/mailboxes")
 def mailboxes(session: str | None = Cookie(None)):
-    require_user(session)
-    return db.rows("""SELECT b.id,b.name,b.email,b.imap_host,b.imap_port,b.smtp_host,b.smtp_port,b.username,
+    user = require_user(session)
+    access, args = mailbox_table_filter(user, "b")
+    return db.rows(f"""SELECT b.id,b.name,b.email,b.imap_host,b.imap_port,b.smtp_host,b.smtp_port,b.username,
       b.imap_username,b.smtp_username,b.imap_auth_mode,b.imap_ssl,b.smtp_mode,b.folder,b.active,b.last_sync_at,
       b.auto_sync,b.last_error,b.created_at,(SELECT count(*) FROM messages m WHERE m.mailbox_id=b.id) message_count,
       (SELECT count(*) FROM attachments a JOIN messages m ON m.id=a.message_id WHERE m.mailbox_id=b.id) attachment_count,
-      (SELECT count(*) FROM rules r WHERE r.mailbox_id=b.id) rule_count FROM mailboxes b ORDER BY b.name""")
+      (SELECT count(*) FROM rules r WHERE r.mailbox_id=b.id) rule_count FROM mailboxes b WHERE {access} ORDER BY b.name""", args)
 
 
 @app.post("/api/mailboxes")
@@ -267,6 +306,34 @@ def add_mailbox(payload: dict = Body(...), session: str | None = Cookie(None)):
       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (payload["name"], payload["email"], payload["imap_host"], int(payload.get("imap_port",993)), payload["smtp_host"], int(payload.get("smtp_port",587)), imap_username, imap_username, smtp_username, auth_mode, encrypt(payload["password"]), int(bool(payload.get("imap_ssl",True))), payload.get("smtp_mode","starttls"), payload.get("folder","INBOX"), int(bool(payload.get("auto_sync", False))), db.now_iso()))
     db.audit("mailbox_created", actor=user["email"], mailbox_id=box_id, name=payload["name"])
     return {"id": box_id}
+
+
+@app.get("/api/mailboxes/{mailbox_id}/permissions")
+def mailbox_permissions(mailbox_id: int, session: str | None = Cookie(None)):
+    require_admin(session)
+    box = db.row("SELECT id FROM mailboxes WHERE id=?", (mailbox_id,))
+    if not box: raise HTTPException(404, "Postfach nicht gefunden")
+    return db.rows("""SELECT u.id,u.email,u.name,u.role,u.active,CASE WHEN p.user_id IS NULL THEN 0 ELSE 1 END allowed
+      FROM users u LEFT JOIN mailbox_permissions p ON p.user_id=u.id AND p.mailbox_id=?
+      WHERE u.role<>'admin' ORDER BY u.name""", (mailbox_id,))
+
+
+@app.put("/api/mailboxes/{mailbox_id}/permissions")
+def update_mailbox_permissions(mailbox_id: int, payload: dict = Body(...), session: str | None = Cookie(None)):
+    admin = require_admin(session)
+    box = db.row("SELECT id,name FROM mailboxes WHERE id=?", (mailbox_id,))
+    if not box: raise HTTPException(404, "Postfach nicht gefunden")
+    user_ids = sorted({int(x) for x in payload.get("user_ids", [])})
+    if user_ids:
+        found = db.rows(f"SELECT id FROM users WHERE role<>'admin' AND active=1 AND id IN ({','.join('?' for _ in user_ids)})", user_ids)
+        valid_ids = {u["id"] for u in found}
+        missing = set(user_ids) - valid_ids
+        if missing: raise HTTPException(400, "Ein oder mehrere Benutzer sind ungültig oder inaktiv")
+    db.execute("DELETE FROM mailbox_permissions WHERE mailbox_id=?", (mailbox_id,))
+    for user_id in user_ids:
+        db.execute("INSERT INTO mailbox_permissions(mailbox_id,user_id,granted_by,created_at) VALUES(?,?,?,?)", (mailbox_id, user_id, admin["id"], db.now_iso()))
+    db.audit("mailbox_permissions_updated", actor=admin["email"], mailbox_id=mailbox_id, users=user_ids)
+    return {"ok": True, "user_ids": user_ids}
 
 
 @app.put("/api/mailboxes/{mailbox_id}")
@@ -310,6 +377,7 @@ def test_mailbox(payload: dict = Body(...), session: str | None = Cookie(None)):
 @app.post("/api/mailboxes/{mailbox_id}/sync")
 def sync_mailbox(mailbox_id: int, session: str | None = Cookie(None)):
     user = require_user(session)
+    ensure_mailbox_access(user, mailbox_id)
     box = db.row("SELECT * FROM mailboxes WHERE id=?", (mailbox_id,))
     if not box: raise HTTPException(404, "Postfach nicht gefunden")
     try: result = fetch_mailbox(box)
@@ -320,7 +388,8 @@ def sync_mailbox(mailbox_id: int, session: str | None = Cookie(None)):
 
 @app.get("/api/mailboxes/{mailbox_id}/folders")
 def mailbox_folders(mailbox_id: int, session: str | None = Cookie(None)):
-    require_user(session)
+    user = require_user(session)
+    ensure_mailbox_access(user, mailbox_id)
     box = db.row("SELECT * FROM mailboxes WHERE id=?", (mailbox_id,))
     if not box: raise HTTPException(404, "Postfach nicht gefunden")
     try: return list_folders(box)
@@ -381,9 +450,12 @@ def add_user(payload: dict = Body(...), session: str | None = Cookie(None)):
 
 @app.get("/api/rules")
 def rules(session: str | None = Cookie(None)):
-    require_user(session)
-    return db.rows("""SELECT r.*,b.name mailbox_name,u.name target_name,u.email user_email FROM rules r
-      LEFT JOIN mailboxes b ON b.id=r.mailbox_id LEFT JOIN users u ON u.id=r.target_user_id ORDER BY r.priority,r.id""")
+    user = require_user(session)
+    where = "1=1" if user.get("role") == "admin" or "id" not in user else "(r.mailbox_id IS NOT NULL AND r.mailbox_id IN (SELECT mailbox_id FROM mailbox_permissions WHERE user_id=?))"
+    args = [] if user.get("role") == "admin" or "id" not in user else [user["id"]]
+    return db.rows(f"""SELECT r.*,b.name mailbox_name,u.name target_name,u.email user_email FROM rules r
+      LEFT JOIN mailboxes b ON b.id=r.mailbox_id LEFT JOIN users u ON u.id=r.target_user_id
+      WHERE {where} ORDER BY r.priority,r.id""", args)
 
 
 def validate_rule_condition(payload):
@@ -393,6 +465,8 @@ def validate_rule_condition(payload):
         raise HTTPException(400, "Ungültiger Regelvergleich")
     if not str(payload.get("value", "")):
         raise HTTPException(400, "Regelwert fehlt")
+    if payload.get("value_logic", "any") not in {"any", "all"}:
+        raise HTTPException(400, "Ungültige Suchlogik")
 
 
 def normalized_rule(payload):
@@ -412,7 +486,7 @@ def normalized_rule(payload):
     return {
         "name": str(payload.get("name") or "Neue Regel").strip() or "Neue Regel",
         "mailbox_id": mailbox_id, "field": payload["field"], "operator": payload["operator"],
-        "value": str(payload.get("value", "")), "action": action,
+        "value": str(payload.get("value", "")), "value_logic": payload.get("value_logic", "any"), "action": action,
         "target_user_id": target_user_id if action == "forward" else None,
         "target_email": target_email if action == "forward" else None,
         "target_folder": target_folder if action == "move" else None,
@@ -424,12 +498,17 @@ def normalized_rule(payload):
 @app.post("/api/rules/preview")
 def preview_rule(payload: dict = Body(...), session: str | None = Cookie(None)):
     """Evaluate one unsaved rule without performing an action or writing audit data."""
-    require_user(session)
+    user = require_user(session)
     validate_rule_condition(payload)
     mailbox_id = payload.get("mailbox_id") or None
+    if mailbox_id:
+        ensure_mailbox_access(user, mailbox_id)
+    elif user.get("role") != "admin" and "id" in user:
+        raise HTTPException(403, "Globale Regeltests sind nur für Administratoren verfügbar")
+    access, access_args = mailbox_filter(user, "m")
     messages = db.rows("""SELECT m.id,m.mailbox_id,m.sender,m.recipients,m.subject,m.received_at,
       m.text_body,m.status,b.name mailbox_name FROM messages m JOIN mailboxes b ON b.id=m.mailbox_id
-      WHERE (? IS NULL OR m.mailbox_id=?) ORDER BY m.received_at DESC LIMIT 2000""", (mailbox_id, mailbox_id))
+      WHERE (? IS NULL OR m.mailbox_id=?) AND """ + access + " ORDER BY m.received_at DESC LIMIT 2000", (mailbox_id, mailbox_id, *access_args))
     matches = [m for m in messages if rule_matches(payload, m)]
     samples = [{k: m[k] for k in ("id", "mailbox_id", "mailbox_name", "sender", "subject", "received_at", "status")} for m in matches[:100]]
     return {"tested": len(messages), "matched": len(matches), "unmatched": len(messages) - len(matches), "samples": samples}
@@ -438,12 +517,17 @@ def preview_rule(payload: dict = Body(...), session: str | None = Cookie(None)):
 @app.get("/api/rules/simulate")
 def simulate_rules(mailbox_id: int | None = None, session: str | None = Cookie(None)):
     """Dry-run the complete active ruleset in production order without side effects."""
-    require_user(session)
+    user = require_user(session)
+    if mailbox_id:
+        ensure_mailbox_access(user, mailbox_id)
+    access, access_args = mailbox_filter(user, "m")
     messages = db.rows("""SELECT m.id,m.mailbox_id,m.sender,m.recipients,m.subject,m.received_at,
       m.text_body,m.status,b.name mailbox_name FROM messages m JOIN mailboxes b ON b.id=m.mailbox_id
-      WHERE (? IS NULL OR m.mailbox_id=?) ORDER BY m.received_at DESC LIMIT 2000""", (mailbox_id, mailbox_id))
+      WHERE (? IS NULL OR m.mailbox_id=?) AND """ + access + " ORDER BY m.received_at DESC LIMIT 2000", (mailbox_id, mailbox_id, *access_args))
+    rule_where = "r.active=1" if user.get("role") == "admin" or "id" not in user else "r.active=1 AND r.mailbox_id IS NOT NULL AND r.mailbox_id IN (SELECT mailbox_id FROM mailbox_permissions WHERE user_id=?)"
+    rule_args = [] if user.get("role") == "admin" or "id" not in user else [user["id"]]
     ruleset = db.rows("""SELECT r.*,u.name target_name,u.email user_email FROM rules r
-      LEFT JOIN users u ON u.id=r.target_user_id WHERE r.active=1 ORDER BY r.priority,r.id""")
+      LEFT JOIN users u ON u.id=r.target_user_id WHERE """ + rule_where + " ORDER BY r.priority,r.id", rule_args)
     results, matched_messages, action_count = [], 0, 0
     for message in messages:
         actions = []
@@ -487,10 +571,15 @@ def apply_rule_to_existing(rule_id: int, session: str | None = Cookie(None)):
       LEFT JOIN users u ON u.id=r.target_user_id WHERE r.id=?""", (rule_id,))
     if not rule: raise HTTPException(404, "Regel nicht gefunden")
     if not rule["active"]: raise HTTPException(409, "Nur aktive Regeln können angewendet werden")
+    if rule["mailbox_id"] is None and user.get("role") != "admin" and "id" in user:
+        raise HTTPException(403, "Globale Regeln können nur Administratoren anwenden")
+    if rule["mailbox_id"] is not None:
+        ensure_mailbox_access(user, rule["mailbox_id"])
+    access, access_args = mailbox_filter(user, "m")
     messages = db.rows("""SELECT m.id,m.mailbox_id,m.sender,m.recipients,m.subject,m.received_at,
       m.text_body,m.status,m.matched_rule_id,b.name mailbox_name FROM messages m JOIN mailboxes b ON b.id=m.mailbox_id
-      WHERE (? IS NULL OR m.mailbox_id=?) AND (m.matched_rule_id IS NULL OR m.matched_rule_id<>?)
-      ORDER BY m.received_at DESC LIMIT 2000""", (rule["mailbox_id"], rule["mailbox_id"], rule_id))
+      WHERE (? IS NULL OR m.mailbox_id=?) AND (m.matched_rule_id IS NULL OR m.matched_rule_id<>?) AND """ + access + """
+      ORDER BY m.received_at DESC LIMIT 2000""", (rule["mailbox_id"], rule["mailbox_id"], rule_id, *access_args))
     matches = [m for m in messages if rule_matches(rule, m)]
     actions = planned_rule_actions(rule)
     samples = [{k: m[k] for k in ("id", "mailbox_id", "mailbox_name", "sender", "subject", "received_at", "status")} for m in matches[:100]]
@@ -521,8 +610,12 @@ def apply_rule_to_existing(rule_id: int, session: str | None = Cookie(None)):
 def add_rule(payload: dict = Body(...), session: str | None = Cookie(None)):
     user = require_user(session)
     rule = normalized_rule(payload)
-    rule_id = db.execute("""INSERT INTO rules(name,mailbox_id,field,operator,value,action,target_user_id,target_email,target_folder,post_forward_folder,priority,active,stop_processing,created_at)
-      VALUES(?,?,?,?,?,?,?,?,?,?,?,1,?,?)""", (rule["name"], rule["mailbox_id"], rule["field"], rule["operator"], rule["value"], rule["action"], rule["target_user_id"], rule["target_email"], rule["target_folder"], rule["post_forward_folder"], rule["priority"], rule["stop_processing"], db.now_iso()))
+    if rule["mailbox_id"] is None and user.get("role") != "admin" and "id" in user:
+        raise HTTPException(403, "Globale Regeln können nur Administratoren erstellen")
+    if rule["mailbox_id"] is not None:
+        ensure_mailbox_access(user, rule["mailbox_id"])
+    rule_id = db.execute("""INSERT INTO rules(name,mailbox_id,field,operator,value,value_logic,action,target_user_id,target_email,target_folder,post_forward_folder,priority,active,stop_processing,created_at)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,1,?,?)""", (rule["name"], rule["mailbox_id"], rule["field"], rule["operator"], rule["value"], rule["value_logic"], rule["action"], rule["target_user_id"], rule["target_email"], rule["target_folder"], rule["post_forward_folder"], rule["priority"], rule["stop_processing"], db.now_iso()))
     db.audit("rule_created", actor=user["email"], rule_id=rule_id, name=rule["name"])
     return {"id": rule_id}
 
@@ -532,10 +625,18 @@ def update_rule(rule_id: int, payload: dict = Body(...), session: str | None = C
     user = require_user(session)
     current = db.row("SELECT * FROM rules WHERE id=?", (rule_id,))
     if not current: raise HTTPException(404, "Regel nicht gefunden")
+    if current["mailbox_id"] is None and user.get("role") != "admin" and "id" in user:
+        raise HTTPException(403, "Globale Regeln können nur Administratoren bearbeiten")
+    if current["mailbox_id"] is not None:
+        ensure_mailbox_access(user, current["mailbox_id"])
     rule = normalized_rule(payload)
+    if rule["mailbox_id"] is None and user.get("role") != "admin" and "id" in user:
+        raise HTTPException(403, "Globale Regeln können nur Administratoren erstellen")
+    if rule["mailbox_id"] is not None:
+        ensure_mailbox_access(user, rule["mailbox_id"])
     active = int(bool(payload.get("active", current["active"])))
-    db.execute("""UPDATE rules SET name=?,mailbox_id=?,field=?,operator=?,value=?,action=?,target_user_id=?,target_email=?,target_folder=?,post_forward_folder=?,priority=?,active=?,stop_processing=? WHERE id=?""",
-      (rule["name"], rule["mailbox_id"], rule["field"], rule["operator"], rule["value"], rule["action"], rule["target_user_id"], rule["target_email"], rule["target_folder"], rule["post_forward_folder"], rule["priority"], active, rule["stop_processing"], rule_id))
+    db.execute("""UPDATE rules SET name=?,mailbox_id=?,field=?,operator=?,value=?,value_logic=?,action=?,target_user_id=?,target_email=?,target_folder=?,post_forward_folder=?,priority=?,active=?,stop_processing=? WHERE id=?""",
+      (rule["name"], rule["mailbox_id"], rule["field"], rule["operator"], rule["value"], rule["value_logic"], rule["action"], rule["target_user_id"], rule["target_email"], rule["target_folder"], rule["post_forward_folder"], rule["priority"], active, rule["stop_processing"], rule_id))
     db.audit("rule_updated", actor=user["email"], rule_id=rule_id, name=rule["name"], rule_action=rule["action"], post_forward_folder=rule["post_forward_folder"], active=bool(active))
     return {"ok": True, "id": rule_id}
 
@@ -543,6 +644,12 @@ def update_rule(rule_id: int, payload: dict = Body(...), session: str | None = C
 @app.delete("/api/rules/{rule_id}")
 def disable_rule(rule_id: int, session: str | None = Cookie(None)):
     user = require_user(session)
+    rule = db.row("SELECT id,mailbox_id FROM rules WHERE id=?", (rule_id,))
+    if not rule: raise HTTPException(404, "Regel nicht gefunden")
+    if rule["mailbox_id"] is None and user.get("role") != "admin" and "id" in user:
+        raise HTTPException(403, "Globale Regeln können nur Administratoren deaktivieren")
+    if rule["mailbox_id"] is not None:
+        ensure_mailbox_access(user, rule["mailbox_id"])
     db.execute("UPDATE rules SET active=0 WHERE id=?", (rule_id,))
     db.audit("rule_disabled", actor=user["email"], rule_id=rule_id)
     return {"ok": True}

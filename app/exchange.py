@@ -545,14 +545,18 @@ def fetch_mailbox(box):
 
 def rule_matches(rule, msg):
     value = str(msg.get({"from": "sender", "to": "recipients", "subject": "subject", "body": "text_body"}.get(rule["field"], rule["field"]), ""))
-    needle = rule["value"]
-    if rule["operator"] == "contains": return needle.casefold() in value.casefold()
-    if rule["operator"] == "equals": return needle.casefold() == value.casefold()
-    if rule["operator"] == "starts_with": return value.casefold().startswith(needle.casefold())
-    if rule["operator"] == "regex":
-        try: return re.search(needle, value, re.I) is not None
-        except re.error: return False
-    return False
+    terms = [t.strip() for t in re.split(r"[\n,;]+", str(rule["value"])) if t.strip()] or [str(rule["value"])]
+    logic = str(rule.get("value_logic") or "any").lower()
+    def one(needle):
+        if rule["operator"] == "contains": return needle.casefold() in value.casefold()
+        if rule["operator"] == "equals": return needle.casefold() == value.casefold()
+        if rule["operator"] == "starts_with": return value.casefold().startswith(needle.casefold())
+        if rule["operator"] == "regex":
+            try: return re.search(needle, value, re.I) is not None
+            except re.error: return False
+        return False
+    results = [one(term) for term in terms]
+    return all(results) if logic == "all" else any(results)
 
 
 def apply_rules(message_id):

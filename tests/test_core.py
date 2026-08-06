@@ -443,6 +443,46 @@ class SecurityTests(unittest.TestCase):
             self.assertEqual(db.row("SELECT matched_rule_id FROM messages WHERE id=?", (message_id,))["matched_rule_id"], rule_id)
             self.assertIsNotNone(db.row("SELECT * FROM audit_log WHERE action='rule_applied_existing'"))
 
+    def test_mailbox_permissions_limit_agent_visibility(self):
+        with tempfile.TemporaryDirectory() as temp_dir, \
+             mock.patch.object(db, "DATA_DIR", Path(temp_dir)), \
+             mock.patch.object(db, "DB_PATH", Path(temp_dir) / "test.sqlite3"):
+            db.init_db()
+            agent_id = db.execute("INSERT INTO users(email,name,role,password_hash,created_at) VALUES(?,?,?,?,?)", ("agent@example.org", "Agent", "agent", "hash", db.now_iso()))
+            allowed = db.execute("""INSERT INTO mailboxes(name,email,imap_host,smtp_host,username,password_enc,folder,active,created_at)
+              VALUES(?,?,?,?,?,?,?,?,?)""", ("Erlaubt", "a@example.org", "imap", "smtp", "svc", "encrypted", "INBOX", 1, db.now_iso()))
+            denied = db.execute("""INSERT INTO mailboxes(name,email,imap_host,smtp_host,username,password_enc,folder,active,created_at)
+              VALUES(?,?,?,?,?,?,?,?,?)""", ("Verboten", "b@example.org", "imap", "smtp", "svc", "encrypted", "INBOX", 1, db.now_iso()))
+            db.execute("INSERT INTO mailbox_permissions(mailbox_id,user_id,created_at) VALUES(?,?,?)", (allowed, agent_id, db.now_iso()))
+            db.execute("""INSERT INTO messages(mailbox_id,uid,sender,recipients,subject,text_body,html_body,created_at)
+              VALUES(?,?,?,?,?,?,?,?)""", (allowed, "1", "a@example.org", "agent@example.org", "Sichtbar", "Text", "<p>Text</p>", db.now_iso()))
+            db.execute("""INSERT INTO messages(mailbox_id,uid,sender,recipients,subject,text_body,html_body,created_at)
+              VALUES(?,?,?,?,?,?,?,?)""", (denied, "2", "b@example.org", "agent@example.org", "Unsichtbar", "Text", "<p>Text</p>", db.now_iso()))
+            user = {"id": agent_id, "email": "agent@example.org", "role": "agent"}
+            with mock.patch.object(main, "require_user", return_value=user):
+                boxes = main.mailboxes(session=None)
+                mails = main.messages(session=None)
+            self.assertEqual([b["id"] for b in boxes], [allowed])
+            self.assertEqual([m["subject"] for m in mails], ["Sichtbar"])
+            with mock.patch.object(main, "require_user", return_value=user):
+                with self.assertRaises(Exception):
+                    main.message(db.row("SELECT id FROM messages WHERE mailbox_id=?", (denied,))["id"], session=None)
+
+    def test_admin_can_update_mailbox_permissions(self):
+        with tempfile.TemporaryDirectory() as temp_dir, \
+             mock.patch.object(db, "DATA_DIR", Path(temp_dir)), \
+             mock.patch.object(db, "DB_PATH", Path(temp_dir) / "test.sqlite3"):
+            db.init_db()
+            admin_id = db.execute("INSERT INTO users(email,name,role,password_hash,created_at) VALUES(?,?,?,?,?)", ("admin@example.org", "Admin", "admin", "hash", db.now_iso()))
+            agent_id = db.execute("INSERT INTO users(email,name,role,password_hash,created_at) VALUES(?,?,?,?,?)", ("agent@example.org", "Agent", "agent", "hash", db.now_iso()))
+            mailbox_id = db.execute("""INSERT INTO mailboxes(name,email,imap_host,smtp_host,username,password_enc,folder,active,created_at)
+              VALUES(?,?,?,?,?,?,?,?,?)""", ("Zentrale", "a@example.org", "imap", "smtp", "svc", "encrypted", "INBOX", 1, db.now_iso()))
+            with mock.patch.object(main, "require_admin", return_value={"id": admin_id, "email": "admin@example.org", "role": "admin"}):
+                result = main.update_mailbox_permissions(mailbox_id, {"user_ids": [agent_id]}, session=None)
+            self.assertTrue(result["ok"])
+            self.assertIsNotNone(db.row("SELECT * FROM mailbox_permissions WHERE mailbox_id=? AND user_id=?", (mailbox_id, agent_id)))
+            self.assertIsNotNone(db.row("SELECT * FROM audit_log WHERE action='mailbox_permissions_updated'"))
+
     def test_imap_auto_falls_back_to_ntlm(self):
         settings = {"imap_host": "exchange.example.org", "imap_port": 993, "imap_ssl": True, "imap_username": "DOMAIN\\svc", "username": "DOMAIN\\svc", "imap_auth_mode": "auto"}
         login_client, ntlm_client = mock.MagicMock(), mock.MagicMock()
@@ -473,6 +513,11 @@ class RuleTests(unittest.TestCase):
     def test_regex(self):
         self.assertTrue(rule_matches({"field": "body", "operator": "regex", "value": r"\d+ EUR"}, self.message))
         self.assertFalse(rule_matches({"field": "body", "operator": "regex", "value": "["}, self.message))
+
+    def test_multiple_terms_support_and_or_logic(self):
+        self.assertTrue(rule_matches({"field": "subject", "operator": "contains", "value": "Rechnung\nMahnung", "value_logic": "any"}, self.message))
+        self.assertTrue(rule_matches({"field": "body", "operator": "contains", "value": "Betrag;EUR", "value_logic": "all"}, self.message))
+        self.assertFalse(rule_matches({"field": "subject", "operator": "contains", "value": "Rechnung, Mahnung", "value_logic": "all"}, self.message))
 
 
 if __name__ == "__main__":

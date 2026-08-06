@@ -70,10 +70,18 @@ def init_db():
         CREATE TABLE IF NOT EXISTS rules (
           id INTEGER PRIMARY KEY, name TEXT NOT NULL, mailbox_id INTEGER REFERENCES mailboxes(id) ON DELETE CASCADE,
           field TEXT NOT NULL, operator TEXT NOT NULL, value TEXT NOT NULL,
+          value_logic TEXT NOT NULL DEFAULT 'any',
           action TEXT NOT NULL DEFAULT 'forward', target_user_id INTEGER REFERENCES users(id), target_email TEXT,
           target_folder TEXT, post_forward_folder TEXT,
           priority INTEGER NOT NULL DEFAULT 100, active INTEGER NOT NULL DEFAULT 1,
           stop_processing INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS mailbox_permissions (
+          mailbox_id INTEGER NOT NULL REFERENCES mailboxes(id) ON DELETE CASCADE,
+          user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          granted_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+          created_at TEXT NOT NULL,
+          PRIMARY KEY(mailbox_id,user_id)
         );
         CREATE TABLE IF NOT EXISTS audit_log (
           id INTEGER PRIMARY KEY, message_id INTEGER REFERENCES messages(id) ON DELETE SET NULL,
@@ -88,6 +96,7 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_messages_status ON messages(status, received_at DESC);
         CREATE INDEX IF NOT EXISTS idx_attachments_message ON attachments(message_id);
         CREATE INDEX IF NOT EXISTS idx_rules_order ON rules(active, priority, id);
+        CREATE INDEX IF NOT EXISTS idx_mailbox_permissions_user ON mailbox_permissions(user_id, mailbox_id);
         CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_log(created_at DESC);
         """)
         # Additive migrations for installations created by earlier versions.
@@ -98,6 +107,8 @@ def init_db():
             db.execute("ALTER TABLE rules ADD COLUMN target_folder TEXT")
         if "post_forward_folder" not in rule_columns:
             db.execute("ALTER TABLE rules ADD COLUMN post_forward_folder TEXT")
+        if "value_logic" not in rule_columns:
+            db.execute("ALTER TABLE rules ADD COLUMN value_logic TEXT NOT NULL DEFAULT 'any'")
         mailbox_columns = {r[1] for r in db.execute("PRAGMA table_info(mailboxes)")}
         if "imap_username" not in mailbox_columns:
             db.execute("ALTER TABLE mailboxes ADD COLUMN imap_username TEXT")
