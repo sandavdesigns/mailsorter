@@ -119,7 +119,8 @@ def health():
 
 @app.post("/api/login")
 def login(response: Response, payload: dict = Body(...)):
-    user = db.row("SELECT * FROM users WHERE lower(email)=lower(?) AND active=1", (str(payload.get("email", "")),))
+    email = str(payload.get("email", "")).strip()
+    user = db.row("SELECT * FROM users WHERE lower(email)=lower(?) AND active=1", (email,))
     if not user or not verify_password(str(payload.get("password", "")), user["password_hash"]):
         raise HTTPException(401, "E-Mail oder Passwort falsch")
     token, digest, expires = new_session()
@@ -440,11 +441,13 @@ def users(session: str | None = Cookie(None)):
 @app.post("/api/users")
 def add_user(payload: dict = Body(...), session: str | None = Cookie(None)):
     admin = require_admin(session)
-    if not payload.get("email") or not payload.get("name") or len(str(payload.get("password", ""))) < 10: raise HTTPException(400, "Name, E-Mail und Passwort (mind. 10 Zeichen) erforderlich")
+    email, name = str(payload.get("email", "")).strip(), str(payload.get("name", "")).strip()
+    role = payload.get("role", "agent") if payload.get("role") in {"agent", "admin"} else "agent"
+    if not email or not name or len(str(payload.get("password", ""))) < 10: raise HTTPException(400, "Name, E-Mail und Passwort (mind. 10 Zeichen) erforderlich")
     try:
-        user_id = db.execute("INSERT INTO users(email,name,role,password_hash,created_at) VALUES(?,?,?,?,?)", (payload["email"], payload["name"], payload.get("role","agent"), hash_password(payload["password"]), db.now_iso()))
+        user_id = db.execute("INSERT INTO users(email,name,role,password_hash,created_at) VALUES(?,?,?,?,?)", (email, name, role, hash_password(payload["password"]), db.now_iso()))
     except Exception: raise HTTPException(409, "E-Mail bereits vorhanden")
-    db.audit("user_created", actor=admin["email"], user_id=user_id, email=payload["email"])
+    db.audit("user_created", actor=admin["email"], user_id=user_id, email=email)
     return {"id": user_id}
 
 

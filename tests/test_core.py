@@ -483,6 +483,19 @@ class SecurityTests(unittest.TestCase):
             self.assertIsNotNone(db.row("SELECT * FROM mailbox_permissions WHERE mailbox_id=? AND user_id=?", (mailbox_id, agent_id)))
             self.assertIsNotNone(db.row("SELECT * FROM audit_log WHERE action='mailbox_permissions_updated'"))
 
+    def test_admin_created_user_can_login(self):
+        with tempfile.TemporaryDirectory() as temp_dir, \
+             mock.patch.object(db, "DATA_DIR", Path(temp_dir)), \
+             mock.patch.object(db, "DB_PATH", Path(temp_dir) / "test.sqlite3"):
+            db.init_db()
+            with mock.patch.object(main, "require_admin", return_value={"id": 1, "email": "admin@example.org", "role": "admin"}):
+                created = main.add_user({"email": " agent@example.org ", "name": " Agent ", "role": "agent", "password": "start-password"}, session=None)
+            response = main.Response()
+            logged_in = main.login(response, {"email": "agent@example.org", "password": "start-password"})
+            self.assertEqual(logged_in["id"], created["id"])
+            self.assertEqual(logged_in["role"], "agent")
+            self.assertIn("session=", response.headers["set-cookie"])
+
     def test_imap_auto_falls_back_to_ntlm(self):
         settings = {"imap_host": "exchange.example.org", "imap_port": 993, "imap_ssl": True, "imap_username": "DOMAIN\\svc", "username": "DOMAIN\\svc", "imap_auth_mode": "auto"}
         login_client, ntlm_client = mock.MagicMock(), mock.MagicMock()
