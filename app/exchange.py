@@ -1,5 +1,6 @@
 import email
 import imaplib
+import os
 import re
 import smtplib
 import ssl
@@ -17,6 +18,11 @@ ALLOWED_TAGS = set(bleach.sanitizer.ALLOWED_TAGS) | {
     "h1", "h2", "h3", "h4", "blockquote", "pre", "hr", "img"
 }
 ALLOWED_ATTRS = {"a": ["href", "title"], "img": ["alt", "width", "height"], "td": ["colspan", "rowspan"]}
+
+
+def test_mode_enabled():
+    # Fail safe: missing or malformed values keep all external mutations disabled.
+    return os.getenv("TEST_MODE", "true").strip().lower() not in {"false", "0", "no", "off"}
 
 
 def clean_html(value):
@@ -78,6 +84,8 @@ def list_folders(box):
 
 
 def move_message(message_id, folder, actor="system", rule_id=None):
+    if test_mode_enabled():
+        raise RuntimeError("Testmodus aktiv: Exchange-Mail wurde nicht verschoben")
     msg = db.row("SELECT m.*,b.* FROM messages m JOIN mailboxes b ON b.id=m.mailbox_id WHERE m.id=?", (message_id,))
     if not msg: raise ValueError("Mail nicht gefunden")
     folder = str(folder or "").strip()
@@ -155,6 +163,12 @@ def apply_rules(message_id):
     for rule in rules:
         if not rule_matches(rule, msg):
             continue
+        if test_mode_enabled():
+            target = rule["target_folder"] if rule.get("action", "forward") == "move" else (rule["target_email"] or rule["user_email"])
+            db.audit("rule_test_match", actor="test-mode", message_id=message_id, mailbox_id=msg["mailbox_id"], rule_id=rule["id"], action=rule.get("action", "forward"), target=target)
+            if rule["stop_processing"]:
+                break
+            continue
         try:
             if rule.get("action", "forward") == "move":
                 move_message(message_id, rule["target_folder"], "rule", rule["id"])
@@ -169,6 +183,8 @@ def apply_rules(message_id):
 
 
 def forward_message(message_id, target, actor, rule_id=None, user_id=None):
+    if test_mode_enabled():
+        raise RuntimeError("Testmodus aktiv: Mail wurde nicht weitergeleitet")
     if not target or "@" not in target:
         raise ValueError("Ungültige Zieladresse")
     msg = db.row("SELECT m.*,b.* FROM messages m JOIN mailboxes b ON b.id=m.mailbox_id WHERE m.id=?", (message_id,))

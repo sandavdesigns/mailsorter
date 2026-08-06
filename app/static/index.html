@@ -2,7 +2,7 @@
 <html lang="de">
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Mailsorter</title><link rel="stylesheet" href="/static/style.css"><link rel="stylesheet" href="/static/testmode.css">
+  <title>Mailsorter</title><link rel="stylesheet" href="/static/style.css"><link rel="stylesheet" href="/static/testmode.css"><link rel="stylesheet" href="/static/safemode.css">
 </head>
 <body>
   <div id="toast"></div>
@@ -24,6 +24,7 @@
       <div class="account"><div id="avatar"></div><div><strong id="who"></strong><small id="role"></small></div><button id="logout" title="Abmelden">↪</button></div>
     </aside>
     <section class="workspace">
+      <div id="modeBanner" class="mode-banner" hidden><strong>TESTMODUS AKTIV</strong><span>Regeln werden nur simuliert. Weiterleitungen und Exchange-Verschiebungen sind serverseitig gesperrt.</span></div>
       <header><div><h1 id="viewTitle">Posteingang</h1><p id="viewSubtitle">Alle eingegangenen Nachrichten</p></div><button id="primaryAction" class="primary">+ Neue Regel</button></header>
       <div id="stats" class="stats"></div>
       <div id="content"></div>

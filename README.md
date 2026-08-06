@@ -41,12 +41,19 @@ Wichtig: `APP_SECRET` nach dem ersten Start nicht ändern. Damit werden die Post
    - `APP_SECRET`: lange, zufällige Zeichenfolge (mindestens 24 Zeichen)
    - `ADMIN_PASSWORD`: sicheres initiales Admin-Passwort (mindestens 10 Zeichen)
    - `MAILSORTER_PORT`: freier Port auf dem Docker-Host, beispielsweise `8081`
+   - `TEST_MODE=true`: sichere Voreinstellung für Einrichtung und Regeltests
    - `SESSION_HTTPS_ONLY=true`, sobald der Zugriff über HTTPS erfolgt
    - optional `POLL_INTERVAL_SECONDS=60` und `TZ=Europe/Berlin`
 4. Stack deployen und den mit `MAILSORTER_PORT` festgelegten TCP-Port zum Reverse Proxy freigeben. Der interne Container-Port bleibt immer 8080.
 5. Für Produktion TLS am Reverse Proxy terminieren und `SESSION_HTTPS_ONLY=true` setzen.
 
 Der Portainer-Server baut Mailsorter nicht selbst. Bei jedem Push auf `main` erzeugt GitHub Actions ein Multi-Arch-Image für AMD64 und ARM64 und veröffentlicht es als `ghcr.io/sandavdesigns/mailsorter:latest`. Portainer lädt nur dieses fertige Image. Dadurch wird auf dem Docker-Server kein funktionierender BuildKit-Worker benötigt.
+
+### Sicherer Testmodus
+
+Mailsorter startet standardmäßig mit `TEST_MODE=true`. In diesem Zustand werden Postfächer gelesen und Regeln ausgewertet, aber das Backend verhindert jede SMTP-Weiterleitung und jede IMAP-Verschiebung. Das gilt sowohl für automatische Regeln als auch für manuelle Aktionen. Regel-Treffer werden als `rule_test_match` protokolliert, damit die spätere Wirkung geprüft werden kann.
+
+Erst nach der Abnahme in Portainer `TEST_MODE=false` setzen und den Stack neu deployen. Die Sperre wird ausschließlich serverseitig anhand der Container-Umgebung aufgehoben; ein Browserbenutzer kann sie nicht umgehen oder versehentlich deaktivieren.
 
 Falls Portainer beim ersten Abruf `denied` meldet, muss das Container-Paket auf GitHub einmalig unter **Packages → mailsorter → Package settings → Change visibility → Public** öffentlich gesetzt werden. Alternativ kann die GHCR-Registry mit einem GitHub-Token in Portainer hinterlegt werden.
 

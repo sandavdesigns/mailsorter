@@ -8,6 +8,7 @@ services:
     environment:
       APP_SECRET: ${APP_SECRET:?APP_SECRET muss gesetzt sein}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:?ADMIN_PASSWORD muss gesetzt sein}
+      TEST_MODE: ${TEST_MODE:-true}
       SESSION_HTTPS_ONLY: ${SESSION_HTTPS_ONLY:-false}
       POLL_INTERVAL_SECONDS: ${POLL_INTERVAL_SECONDS:-60}
       TZ: ${TZ:-Europe/Berlin}

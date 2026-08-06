@@ -11,7 +11,7 @@ from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import db
-from .exchange import fetch_mailbox, forward_message, list_folders, move_message, rule_matches
+from .exchange import fetch_mailbox, forward_message, list_folders, move_message, rule_matches, test_mode_enabled
 from .security import encrypt, hash_password, new_session, token_hash, verify_password
 
 STATIC = Path(__file__).parent / "static"
@@ -121,7 +121,14 @@ def dashboard(session: str | None = Cookie(None)):
         "assigned": db.row("SELECT count(*) n FROM messages WHERE status='assigned'")["n"],
         "mailboxes": db.row("SELECT count(*) n FROM mailboxes WHERE active=1")["n"],
         "rules": db.row("SELECT count(*) n FROM rules WHERE active=1")["n"],
+        "test_mode": test_mode_enabled(),
     }
+
+
+@app.get("/api/system")
+def system_status(session: str | None = Cookie(None)):
+    require_user(session)
+    return {"test_mode": test_mode_enabled()}
 
 
 @app.get("/api/messages")
@@ -152,6 +159,8 @@ def message(message_id: int, session: str | None = Cookie(None)):
 @app.post("/api/messages/{message_id}/assign")
 def assign(message_id: int, payload: dict = Body(...), session: str | None = Cookie(None)):
     user = require_user(session)
+    if test_mode_enabled():
+        raise HTTPException(423, "Testmodus aktiv: Mail wurde nicht weitergeleitet")
     target_user = None
     if payload.get("user_id"):
         target_user = db.row("SELECT * FROM users WHERE id=? AND active=1", (int(payload["user_id"]),))
@@ -177,6 +186,8 @@ def set_status(message_id: int, payload: dict = Body(...), session: str | None =
 @app.post("/api/messages/{message_id}/move")
 def move(message_id: int, payload: dict = Body(...), session: str | None = Cookie(None)):
     user = require_user(session)
+    if test_mode_enabled():
+        raise HTTPException(423, "Testmodus aktiv: Exchange-Mail wurde nicht verschoben")
     try: move_message(message_id, payload.get("folder"), user["email"])
     except Exception as exc: raise HTTPException(502, f"Verschieben fehlgeschlagen: {exc}")
     return {"ok": True}
