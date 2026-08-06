@@ -2,7 +2,7 @@
 <html lang="de">
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Mailsorter</title><link rel="stylesheet" href="/static/style.css?v=__ASSET_VERSION__"><link rel="stylesheet" href="/static/testmode.css?v=__ASSET_VERSION__"><link rel="stylesheet" href="/static/safemode.css?v=__ASSET_VERSION__"><link rel="stylesheet" href="/static/mailbox.css?v=__ASSET_VERSION__"><link rel="stylesheet" href="/static/exchange-help.css?v=__ASSET_VERSION__"><link rel="stylesheet" href="/static/mail-render.css?v=__ASSET_VERSION__">
+  <title>Mailsorter</title><link rel="stylesheet" href="/static/style.css?v=__ASSET_VERSION__"><link rel="stylesheet" href="/static/testmode.css?v=__ASSET_VERSION__"><link rel="stylesheet" href="/static/safemode.css?v=__ASSET_VERSION__"><link rel="stylesheet" href="/static/mailbox.css?v=__ASSET_VERSION__"><link rel="stylesheet" href="/static/exchange-help.css?v=__ASSET_VERSION__"><link rel="stylesheet" href="/static/mail-render.css?v=__ASSET_VERSION__"><link rel="stylesheet" href="/static/version.css?v=__ASSET_VERSION__">
 </head>
 <body>
   <div id="toast"></div>
@@ -22,6 +22,7 @@
         <button data-view="audit">◷ <span>Protokoll</span></button>
       </nav>
       <div class="account"><div id="avatar"></div><div><strong id="who"></strong><small id="role"></small></div><button id="logout" title="Abmelden">↪</button></div>
+      <div class="app-version">Version <span id="appVersion">–</span></div>
     </aside>
     <section class="workspace">
       <div id="modeBanner" class="mode-banner" hidden><strong>TESTMODUS AKTIV</strong><span>Regeln werden nur simuliert. Für den Livegang in Portainer TEST_MODE=false setzen und den Stack neu deployen.<span id="modeValue"></span></span></div>

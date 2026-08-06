@@ -36,6 +36,11 @@ def asset_version():
         return db.now_iso()
 
 
+def app_version():
+    value = os.getenv("APP_VERSION") or "dev"
+    return value[:12]
+
+
 def bootstrap_admin():
     if db.row("SELECT id FROM users LIMIT 1"):
         return
@@ -200,6 +205,7 @@ def system_status(session: str | None = Cookie(None)):
         "test_mode": test_mode_enabled(),
         "test_mode_value": test_mode_value(),
         "poll_interval_seconds": poll_interval_seconds(),
+        "app_version": app_version(),
     }
 
 
