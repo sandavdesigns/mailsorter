@@ -299,6 +299,33 @@ class SecurityTests(unittest.TestCase):
             self.assertIsNotNone(audit)
             self.assertIsNone(audit["message_id"])
 
+    def test_auto_sync_only_fetches_enabled_mailboxes(self):
+        with tempfile.TemporaryDirectory() as temp_dir, \
+             mock.patch.object(db, "DATA_DIR", Path(temp_dir)), \
+             mock.patch.object(db, "DB_PATH", Path(temp_dir) / "test.sqlite3"):
+            db.init_db()
+            auto_id = db.execute("""INSERT INTO mailboxes(name,email,imap_host,smtp_host,username,password_enc,folder,active,auto_sync,created_at)
+              VALUES(?,?,?,?,?,?,?,?,?,?)""", ("Auto", "auto@example.org", "imap", "smtp", "svc", "encrypted", "INBOX", 1, 1, db.now_iso()))
+            db.execute("""INSERT INTO mailboxes(name,email,imap_host,smtp_host,username,password_enc,folder,active,auto_sync,created_at)
+              VALUES(?,?,?,?,?,?,?,?,?,?)""", ("Manuell", "manual@example.org", "imap", "smtp", "svc", "encrypted", "INBOX", 1, 0, db.now_iso()))
+            with mock.patch.object(main, "fetch_mailbox", return_value={"new_messages": 2, "removed_messages": 1}) as fetch:
+                main.sync_all()
+            fetch.assert_called_once()
+            self.assertEqual(fetch.call_args.args[0]["id"], auto_id)
+            audit = db.row("SELECT * FROM audit_log WHERE action='auto_sync'")
+            self.assertIsNotNone(audit)
+
+    def test_system_interval_can_be_updated(self):
+        with tempfile.TemporaryDirectory() as temp_dir, \
+             mock.patch.object(db, "DATA_DIR", Path(temp_dir)), \
+             mock.patch.object(db, "DB_PATH", Path(temp_dir) / "test.sqlite3"):
+            db.init_db()
+            with mock.patch.object(main, "require_admin", return_value={"email": "admin@example.org"}):
+                result = main.update_system({"poll_interval_seconds": 120}, session=None)
+            self.assertEqual(result["poll_interval_seconds"], 120)
+            self.assertEqual(main.poll_interval_seconds(), 120)
+            self.assertIsNotNone(db.row("SELECT * FROM audit_log WHERE action='system_updated'"))
+
     def test_existing_rule_can_be_edited_and_reactivated(self):
         with tempfile.TemporaryDirectory() as temp_dir, \
              mock.patch.object(db, "DATA_DIR", Path(temp_dir)), \

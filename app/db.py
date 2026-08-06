@@ -46,7 +46,11 @@ def init_db():
           imap_auth_mode TEXT NOT NULL DEFAULT 'auto', password_enc TEXT NOT NULL,
           imap_ssl INTEGER NOT NULL DEFAULT 1, smtp_mode TEXT NOT NULL DEFAULT 'starttls',
           folder TEXT NOT NULL DEFAULT 'INBOX', active INTEGER NOT NULL DEFAULT 1,
+          auto_sync INTEGER NOT NULL DEFAULT 0,
           last_sync_at TEXT, last_error TEXT, created_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS settings (
+          key TEXT PRIMARY KEY, value TEXT NOT NULL
         );
         CREATE TABLE IF NOT EXISTS messages (
           id INTEGER PRIMARY KEY, mailbox_id INTEGER NOT NULL REFERENCES mailboxes(id) ON DELETE CASCADE,
@@ -101,11 +105,14 @@ def init_db():
             db.execute("ALTER TABLE mailboxes ADD COLUMN smtp_username TEXT")
         if "imap_auth_mode" not in mailbox_columns:
             db.execute("ALTER TABLE mailboxes ADD COLUMN imap_auth_mode TEXT NOT NULL DEFAULT 'auto'")
+        if "auto_sync" not in mailbox_columns:
+            db.execute("ALTER TABLE mailboxes ADD COLUMN auto_sync INTEGER NOT NULL DEFAULT 0")
         message_columns = {r[1] for r in db.execute("PRAGMA table_info(messages)")}
         if "parser_version" not in message_columns:
             # Existing messages are refreshed from Exchange on their next mailbox sync.
             db.execute("ALTER TABLE messages ADD COLUMN parser_version INTEGER NOT NULL DEFAULT 1")
         db.execute("UPDATE mailboxes SET imap_username=COALESCE(imap_username,username),smtp_username=COALESCE(smtp_username,username)")
+        db.execute("INSERT OR IGNORE INTO settings(key,value) VALUES('poll_interval_seconds', ?)", (os.getenv("POLL_INTERVAL_SECONDS", "60"),))
 
 
 def rows(sql, args=()):
@@ -130,6 +137,15 @@ def audit(action, actor="system", message_id=None, mailbox_id=None, **details):
         "INSERT INTO audit_log(message_id,mailbox_id,actor,action,details,created_at) VALUES(?,?,?,?,?,?)",
         (message_id, mailbox_id, actor, action, json.dumps(details, ensure_ascii=False), now_iso()),
     )
+
+
+def get_setting(key, default=None):
+    found = row("SELECT value FROM settings WHERE key=?", (key,))
+    return found["value"] if found else default
+
+
+def set_setting(key, value):
+    execute("INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, str(value)))
 
 
 def purge_mailbox(mailbox_id, actor):
