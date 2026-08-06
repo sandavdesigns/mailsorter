@@ -11,8 +11,8 @@ from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import db
-from .exchange import fetch_mailbox, forward_message, list_folders, move_message, rule_matches, test_mode_enabled
-from .security import encrypt, hash_password, new_session, token_hash, verify_password
+from .exchange import fetch_mailbox, forward_message, list_folders, move_message, rule_matches, test_mailbox_connection, test_mode_enabled
+from .security import decrypt, encrypt, hash_password, new_session, token_hash, verify_password
 
 STATIC = Path(__file__).parent / "static"
 stop_event = threading.Event()
@@ -208,6 +208,37 @@ def add_mailbox(payload: dict = Body(...), session: str | None = Cookie(None)):
       VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""", (payload["name"], payload["email"], payload["imap_host"], int(payload.get("imap_port",993)), payload["smtp_host"], int(payload.get("smtp_port",587)), payload["username"], encrypt(payload["password"]), int(bool(payload.get("imap_ssl",True))), payload.get("smtp_mode","starttls"), payload.get("folder","INBOX"), db.now_iso()))
     db.audit("mailbox_created", actor=user["email"], mailbox_id=box_id, name=payload["name"])
     return {"id": box_id}
+
+
+@app.put("/api/mailboxes/{mailbox_id}")
+def update_mailbox(mailbox_id: int, payload: dict = Body(...), session: str | None = Cookie(None)):
+    user = require_admin(session)
+    current = db.row("SELECT * FROM mailboxes WHERE id=?", (mailbox_id,))
+    if not current: raise HTTPException(404, "Postfach nicht gefunden")
+    required = ["name", "email", "imap_host", "smtp_host", "username"]
+    if any(not str(payload.get(k, "")).strip() for k in required): raise HTTPException(400, "Pflichtfelder fehlen")
+    password_enc = encrypt(payload["password"]) if payload.get("password") else current["password_enc"]
+    db.execute("""UPDATE mailboxes SET name=?,email=?,imap_host=?,imap_port=?,smtp_host=?,smtp_port=?,username=?,password_enc=?,imap_ssl=?,smtp_mode=?,folder=?,active=?,last_error=NULL WHERE id=?""",
+      (payload["name"], payload["email"], payload["imap_host"], int(payload.get("imap_port",993)), payload["smtp_host"], int(payload.get("smtp_port",587)), payload["username"], password_enc, int(bool(payload.get("imap_ssl",True))), payload.get("smtp_mode","starttls"), payload.get("folder","INBOX"), int(bool(payload.get("active", current["active"]))), mailbox_id))
+    db.audit("mailbox_updated", actor=user["email"], mailbox_id=mailbox_id, name=payload["name"], password_changed=bool(payload.get("password")))
+    return {"ok": True}
+
+
+@app.post("/api/mailboxes/test")
+def test_mailbox(payload: dict = Body(...), session: str | None = Cookie(None)):
+    user = require_admin(session)
+    current = db.row("SELECT * FROM mailboxes WHERE id=?", (int(payload["id"]),)) if payload.get("id") else None
+    values = dict(current or {})
+    values.update({k: v for k, v in payload.items() if v is not None and k != "password"})
+    required = ["imap_host", "smtp_host", "username"]
+    if any(not str(values.get(k, "")).strip() for k in required): raise HTTPException(400, "Server und Benutzername werden für den Test benötigt")
+    password = str(payload.get("password") or "")
+    if not password and current:
+        password = decrypt(current["password_enc"])
+    if not password: raise HTTPException(400, "Passwort wird für den Verbindungstest benötigt")
+    result = test_mailbox_connection(values, password)
+    db.audit("mailbox_connection_test", actor=user["email"], mailbox_id=(current or {}).get("id"), imap_ok=result["imap"]["ok"], smtp_ok=result["smtp"]["ok"])
+    return result
 
 
 @app.post("/api/mailboxes/{mailbox_id}/sync")

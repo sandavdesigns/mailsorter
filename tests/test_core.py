@@ -5,7 +5,7 @@ from unittest import mock
 os.environ.setdefault("APP_SECRET", "test-secret-with-at-least-24-characters")
 
 from app import exchange
-from app.exchange import apply_rules, clean_html, forward_message, move_message, rule_matches, test_mode_enabled
+from app.exchange import apply_rules, clean_html, forward_message, move_message, rule_matches, test_mailbox_connection, test_mode_enabled
 from app.security import decrypt, encrypt, hash_password, verify_password
 
 
@@ -54,6 +54,17 @@ class SecurityTests(unittest.TestCase):
             move.assert_not_called()
             audit.assert_called_once()
             self.assertEqual(audit.call_args.args[0], "rule_test_match")
+
+    def test_mailbox_connection_test_does_not_send_mail(self):
+        settings = {"imap_host": "exchange.example.org", "imap_port": 993, "imap_ssl": True, "smtp_host": "exchange.example.org", "smtp_port": 587, "smtp_mode": "starttls", "username": "svc", "folder": "INBOX"}
+        with mock.patch.object(exchange.imaplib, "IMAP4_SSL") as imap_class, \
+             mock.patch.object(exchange.smtplib, "SMTP") as smtp_class:
+            imap_class.return_value.select.return_value = ("OK", [])
+            result = test_mailbox_connection(settings, "secret")
+            self.assertTrue(result["ok"])
+            imap_class.return_value.login.assert_called_once_with("svc", "secret")
+            smtp_class.return_value.login.assert_called_once_with("svc", "secret")
+            self.assertFalse(smtp_class.return_value.send_message.called)
 
 
 class RuleTests(unittest.TestCase):

@@ -65,6 +65,47 @@ def connect_imap(box):
     return client
 
 
+def test_mailbox_connection(box, password):
+    """Test authentication and the configured inbox without sending or changing mail."""
+    result = {"ok": True, "imap": {"ok": False}, "smtp": {"ok": False}}
+    imap = None
+    try:
+        imap = imaplib.IMAP4_SSL(box["imap_host"], int(box.get("imap_port", 993)), ssl_context=ssl.create_default_context()) if box.get("imap_ssl", True) else imaplib.IMAP4(box["imap_host"], int(box.get("imap_port", 143)))
+        imap.login(box["username"], password)
+        if imap.select(box.get("folder") or "INBOX", readonly=True)[0] != "OK":
+            raise RuntimeError(f"Ordner {box.get('folder') or 'INBOX'} nicht verfügbar")
+        result["imap"] = {"ok": True, "message": "Anmeldung und Ordnerzugriff erfolgreich"}
+    except Exception as exc:
+        result["ok"] = False
+        result["imap"] = {"ok": False, "message": str(exc)[:300]}
+    finally:
+        if imap:
+            try: imap.logout()
+            except Exception: pass
+
+    smtp = None
+    try:
+        mode = box.get("smtp_mode") or "starttls"
+        if mode == "ssl":
+            smtp = smtplib.SMTP_SSL(box["smtp_host"], int(box.get("smtp_port", 465)), context=ssl.create_default_context(), timeout=20)
+        else:
+            smtp = smtplib.SMTP(box["smtp_host"], int(box.get("smtp_port", 587)), timeout=20)
+            smtp.ehlo()
+            if mode == "starttls":
+                smtp.starttls(context=ssl.create_default_context())
+                smtp.ehlo()
+        smtp.login(box["username"], password)
+        result["smtp"] = {"ok": True, "message": "Anmeldung erfolgreich; keine Mail gesendet"}
+    except Exception as exc:
+        result["ok"] = False
+        result["smtp"] = {"ok": False, "message": str(exc)[:300]}
+    finally:
+        if smtp:
+            try: smtp.quit()
+            except Exception: pass
+    return result
+
+
 def list_folders(box):
     client = connect_imap(box)
     try:

@@ -5,6 +5,7 @@ Mailsorter ist eine browserbasierte Verteilstelle für gemeinsame Firmenpostfäc
 ## Funktionen
 
 - mehrere gemeinsame Postfächer mit getrennten Zugangsdaten und Ordnerstrukturen
+- Postfächer nachträglich bearbeiten und IMAP/SMTP-Verbindungen ohne Mailversand testen
 - zentrale Inbox mit Suche, Status und Postfachfilter
 - bereinigte HTML-Vorschau ohne Skripte, Formulare oder nachgeladene Bilder
 - manuelle Weiterleitung an interne Benutzer oder freie E-Mail-Adressen
@@ -62,6 +63,8 @@ Das Volume `mailsorter_data` enthält Datenbank, Regeln, Audit-Log und verschlü
 ## Exchange On-Premises vorbereiten
 
 Pro gemeinsamem Postfach wird ein technisches Konto benötigt, das auf das Postfach zugreifen darf. In Mailsorter werden dessen IMAP-/SMTP-Daten hinterlegt.
+
+Beim Anlegen und Bearbeiten steht **Verbindung testen** zur Verfügung. Dabei prüft Mailsorter TLS-Verbindung, Anmeldung und Zugriff auf den angegebenen IMAP-Ordner sowie die SMTP-Anmeldung. Es wird ausdrücklich keine Testmail gesendet. Beim Bearbeiten kann das Passwort leer bleiben; dann wird das bereits verschlüsselt gespeicherte Passwort weiterverwendet.
 
 - IMAP muss am Exchange-Server aktiviert und vom Container erreichbar sein (üblich: TCP 993 mit TLS).
 - SMTP Client Submission muss erreichbar sein (üblich: TCP 587 mit STARTTLS) und das Konto muss mit der gemeinsamen Absenderadresse senden dürfen.
