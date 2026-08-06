@@ -135,7 +135,7 @@ class SecurityTests(unittest.TestCase):
 
     def test_automatic_rule_only_logs_in_test_mode(self):
         message = {"id": 7, "mailbox_id": 2, "sender": "billing@example.org", "recipients": "inbox@example.org", "subject": "Rechnung", "text_body": "Test"}
-        rule = {"id": 3, "mailbox_id": None, "field": "subject", "operator": "contains", "value": "Rechnung", "action": "forward", "target_email": "team@example.org", "user_email": None, "target_folder": None, "stop_processing": 1}
+        rule = {"id": 3, "mailbox_id": None, "field": "subject", "operator": "contains", "value": "Rechnung", "action": "forward", "target_email": "team@example.org", "user_email": None, "target_folder": None, "post_forward_folder": "INBOX/Archiv", "stop_processing": 1}
         with mock.patch.dict(os.environ, {"TEST_MODE": "true"}, clear=False), \
              mock.patch.object(exchange.db, "row", return_value=message), \
              mock.patch.object(exchange.db, "rows", return_value=[rule]), \
@@ -147,6 +147,21 @@ class SecurityTests(unittest.TestCase):
             move.assert_not_called()
             audit.assert_called_once()
             self.assertEqual(audit.call_args.args[0], "rule_test_match")
+            self.assertEqual(audit.call_args.kwargs["actions"], [{"action": "forward", "target": "team@example.org"}, {"action": "move", "target": "INBOX/Archiv"}])
+
+    def test_forward_rule_can_move_message_after_forwarding(self):
+        message = {"id": 7, "mailbox_id": 2, "sender": "billing@example.org", "recipients": "inbox@example.org", "subject": "Rechnung", "text_body": "Test"}
+        rule = {"id": 3, "mailbox_id": 2, "field": "subject", "operator": "contains", "value": "Rechnung", "action": "forward", "target_email": "team@example.org", "user_email": None, "target_folder": None, "post_forward_folder": "INBOX/Archiv", "stop_processing": 1}
+        with mock.patch.object(exchange, "test_mode_enabled", return_value=False), \
+             mock.patch.object(exchange.db, "row", return_value=message), \
+             mock.patch.object(exchange.db, "rows", return_value=[rule]), \
+             mock.patch.object(exchange.db, "execute") as execute, \
+             mock.patch.object(exchange, "forward_message") as forward, \
+             mock.patch.object(exchange, "move_message") as move:
+            apply_rules(7)
+            forward.assert_called_once_with(7, "team@example.org", "rule", 3)
+            move.assert_called_once_with(7, "INBOX/Archiv", "rule", 3)
+            execute.assert_called_once_with("UPDATE messages SET matched_rule_id=? WHERE id=?", (3, 7))
 
     def test_mailbox_connection_test_does_not_send_mail(self):
         settings = {"imap_host": "exchange.example.org", "imap_port": 993, "imap_ssl": True, "smtp_host": "exchange.example.org", "smtp_port": 587, "smtp_mode": "starttls", "username": "legacy", "imap_username": "imap-svc", "smtp_username": "smtp-svc", "folder": "INBOX"}
@@ -258,11 +273,14 @@ class SecurityTests(unittest.TestCase):
              mock.patch.object(db, "DATA_DIR", Path(temp_dir)), \
              mock.patch.object(db, "DB_PATH", Path(temp_dir) / "test.sqlite3"):
             db.init_db()
+            mailbox_id = db.execute("""INSERT INTO mailboxes(name,email,imap_host,smtp_host,username,password_enc,folder,active,created_at)
+              VALUES(?,?,?,?,?,?,?,?,?)""", ("Zentrale", "zentrale@example.org", "imap", "smtp", "svc", "encrypted", "INBOX", 1, db.now_iso()))
             rule_id = db.execute("""INSERT INTO rules(name,field,operator,value,action,target_email,target_folder,priority,active,stop_processing,created_at)
               VALUES(?,?,?,?,?,?,?,?,?,?,?)""", ("Alt", "from", "contains", "alt@example.org", "forward", "alt-target@example.org", "Alter Ordner", 100, 0, 1, db.now_iso()))
             payload = {
                 "name": "Neue Betreffregel", "field": "subject", "operator": "starts_with", "value": "Rechnung",
-                "action": "forward", "target_email": "team@example.org", "priority": 25,
+                "action": "forward", "target_email": "team@example.org", "mailbox_id": mailbox_id,
+                "post_forward_folder": "INBOX/Archiv", "priority": 25,
                 "stop_processing": 0, "active": 1,
             }
             with mock.patch.object(main, "require_user", return_value={"email": "editor@example.org"}):
@@ -274,10 +292,19 @@ class SecurityTests(unittest.TestCase):
             self.assertEqual(updated["operator"], "starts_with")
             self.assertEqual(updated["target_email"], "team@example.org")
             self.assertIsNone(updated["target_folder"])
+            self.assertEqual(updated["post_forward_folder"], "INBOX/Archiv")
             self.assertEqual(updated["priority"], 25)
             self.assertEqual(updated["active"], 1)
             self.assertEqual(updated["stop_processing"], 0)
             self.assertIsNotNone(db.row("SELECT * FROM audit_log WHERE action='rule_updated'"))
+
+    def test_forward_archive_rule_requires_a_specific_mailbox(self):
+        payload = {
+            "name": "Global mit Archiv", "field": "subject", "operator": "contains", "value": "Rechnung",
+            "action": "forward", "target_email": "team@example.org", "post_forward_folder": "INBOX/Archiv",
+        }
+        with self.assertRaisesRegex(Exception, "Archivierung"):
+            main.normalized_rule(payload)
 
     def test_imap_auto_falls_back_to_ntlm(self):
         settings = {"imap_host": "exchange.example.org", "imap_port": 993, "imap_ssl": True, "imap_username": "DOMAIN\\svc", "username": "DOMAIN\\svc", "imap_auth_mode": "auto"}

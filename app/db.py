@@ -67,7 +67,7 @@ def init_db():
           id INTEGER PRIMARY KEY, name TEXT NOT NULL, mailbox_id INTEGER REFERENCES mailboxes(id) ON DELETE CASCADE,
           field TEXT NOT NULL, operator TEXT NOT NULL, value TEXT NOT NULL,
           action TEXT NOT NULL DEFAULT 'forward', target_user_id INTEGER REFERENCES users(id), target_email TEXT,
-          target_folder TEXT,
+          target_folder TEXT, post_forward_folder TEXT,
           priority INTEGER NOT NULL DEFAULT 100, active INTEGER NOT NULL DEFAULT 1,
           stop_processing INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL
         );
@@ -92,6 +92,8 @@ def init_db():
             db.execute("ALTER TABLE rules ADD COLUMN action TEXT NOT NULL DEFAULT 'forward'")
         if "target_folder" not in rule_columns:
             db.execute("ALTER TABLE rules ADD COLUMN target_folder TEXT")
+        if "post_forward_folder" not in rule_columns:
+            db.execute("ALTER TABLE rules ADD COLUMN post_forward_folder TEXT")
         mailbox_columns = {r[1] for r in db.execute("PRAGMA table_info(mailboxes)")}
         if "imap_username" not in mailbox_columns:
             db.execute("ALTER TABLE mailboxes ADD COLUMN imap_username TEXT")

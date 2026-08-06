@@ -11,10 +11,10 @@ Mailsorter ist eine browserbasierte Verteilstelle für gemeinsame Firmenpostfäc
 - Outlook-nahe, bereinigte HTML-Vorschau mit korrekten Zeichensätzen und eingebetteten Bildern
 - externe Mailbilder werden zum Schutz vor Tracking erst nach einem bewussten Klick geladen
 - Anlagenleiste mit Dateiname, Typ, Größe und sicherem Download; gespeicherte Anlagen werden beim Weiterleiten übernommen
-- manuelle Weiterleitung an interne Benutzer oder freie E-Mail-Adressen
+- manuelle Weiterleitung an interne Benutzer oder freie E-Mail-Adressen, optional mit anschließender Archivierung im Exchange-Ordner
 - manuelles Verschieben in vorhandene Exchange-Unterordner; Administratoren können neue Unterordner direkt in der Postfachverwaltung anlegen
 - Regeln auf Absender, Empfänger, Betreff oder Mailinhalt
-- Regelaktionen: per SMTP weiterleiten **oder** per IMAP in Unterordner verschieben
+- Regelaktionen: per SMTP weiterleiten, per IMAP in Unterordner verschieben oder nach einer Weiterleitung automatisch archivieren
 - globale Regeln und Regeln je Postfach; bestehende Regeln können bearbeitet, deaktiviert und wieder aktiviert werden
 - Verschieberegeln sind immer postfachbezogen
 - priorisierte Regeln mit optionalem Verarbeitungsstopp
@@ -56,7 +56,7 @@ Der Portainer-Server baut Mailsorter nicht selbst. Bei jedem Push auf `main` erz
 
 ### Sicherer Testmodus
 
-Mailsorter startet standardmäßig mit `TEST_MODE=true`. In diesem Zustand werden Postfächer gelesen und Regeln ausgewertet, aber das Backend verhindert jede SMTP-Weiterleitung und jede IMAP-Verschiebung. Das gilt sowohl für automatische Regeln als auch für manuelle Aktionen. Regel-Treffer werden als `rule_test_match` protokolliert, damit die spätere Wirkung geprüft werden kann.
+Mailsorter startet standardmäßig mit `TEST_MODE=true`. In diesem Zustand werden Postfächer gelesen und Regeln ausgewertet, aber das Backend verhindert jede SMTP-Weiterleitung und jede IMAP-Verschiebung. Das gilt sowohl für automatische Regeln als auch für manuelle Aktionen und auch für kombinierte Regeln wie „weiterleiten, danach archivieren“. Regel-Treffer werden als `rule_test_match` protokolliert, damit die spätere Wirkung geprüft werden kann.
 
 Erst nach der Abnahme in Portainer `TEST_MODE=false` setzen und den Stack neu deployen. Die Sperre wird ausschließlich serverseitig anhand der Container-Umgebung aufgehoben; ein Browserbenutzer kann sie nicht umgehen oder versehentlich deaktivieren.
 
@@ -88,13 +88,15 @@ Diese Version unterstützt Standard-IMAP-/SMTP-Authentifizierung (`LOGIN`/`PLAIN
 
 Regeln laufen in aufsteigender Priorität. Zuerst werden globale und postfachbezogene Regeln gemeinsam sortiert. Bei aktiviertem „Danach keine weiteren Regeln anwenden“ endet die Verarbeitung nach der ersten passenden Regel.
 
+Weiterleitungsregeln können optional einen Folgeordner enthalten. Dann wird die Mail zuerst an den gewählten Benutzer oder die Zieladresse gesendet und anschließend im ursprünglichen Exchange-Postfach in den gewählten Archivordner verschoben. Diese Kombiregeln müssen einem konkreten Postfach zugeordnet sein, damit die Ordnerauswahl eindeutig ist. Manuelle Weiterleitungen bieten dieselbe optionale Archivierung an.
+
 Eine Regel wirkt auf neu synchronisierte Mails. Das nachträgliche Anlegen einer Regel verarbeitet vorhandene Mails nicht erneut. So verhindert die Anwendung unerwartete Massenweiterleitungen. Eine manuelle Aktion ist jederzeit in der Mailansicht möglich.
 
 ### Regeln vor dem Live-Betrieb testen
 
-Im Regel-Dialog prüft **Testlauf** eine noch nicht gespeicherte Bedingung gegen bereits eingelesene Mails und zeigt Trefferzahl sowie Beispiele. Unter **Regeln → Alle aktiven Regeln testen** wird der komplette Regelsatz in seiner echten Prioritätsreihenfolge simuliert. Die Vorschau zeigt pro Mail die geplanten Weiterleitungen oder Ordnerbewegungen und berücksichtigt „Danach keine weiteren Regeln anwenden“.
+Im Regel-Dialog prüft **Testlauf** eine noch nicht gespeicherte Bedingung gegen bereits eingelesene Mails und zeigt Trefferzahl sowie Beispiele. Unter **Regeln → Alle aktiven Regeln testen** wird der komplette Regelsatz in seiner echten Prioritätsreihenfolge simuliert. Die Vorschau zeigt pro Mail die geplanten Weiterleitungen, Folge-Archivierungen oder Ordnerbewegungen und berücksichtigt „Danach keine weiteren Regeln anwenden“.
 
-Der Testmodus ist strikt read-only: Er versendet und verschiebt nichts und schreibt auch keinen Audit-Eintrag. Für eine schnelle, begrenzte Vorschau werden höchstens die 2.000 neuesten eingelesenen Mails ausgewertet und bis zu 200 Ergebnis-Mails dargestellt.
+Der Testmodus führt keine externen Mailaktionen aus: Er versendet und verschiebt nichts. Automatische Regel-Treffer werden als Test-Treffer protokolliert; die reinen Vorschau-Funktionen im Browser schreiben keinen Audit-Eintrag. Für eine schnelle, begrenzte Vorschau werden höchstens die 2.000 neuesten eingelesenen Mails ausgewertet und bis zu 200 Ergebnis-Mails dargestellt.
 
 Beim Verschieben bleibt der Datensatz als erledigter Audit-Eintrag in Mailsorter erhalten, auch wenn die Originalmail anschließend nicht mehr im überwachten Quellordner liegt.
 

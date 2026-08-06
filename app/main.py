@@ -189,8 +189,12 @@ def assign(message_id: int, payload: dict = Body(...), session: str | None = Coo
     target = (target_user or {}).get("email") or str(payload.get("email", ""))
     try:
         forward_message(message_id, target, user["email"], user_id=(target_user or {}).get("id"))
+        archive_folder = str(payload.get("archive_folder") or "").strip()
+        if archive_folder:
+            move_message(message_id, archive_folder, user["email"])
     except Exception as exc:
-        raise HTTPException(502, f"Weiterleitung fehlgeschlagen: {exc}")
+        prefix = "Weiterleitung oder Archivierung fehlgeschlagen" if payload.get("archive_folder") else "Weiterleitung fehlgeschlagen"
+        raise HTTPException(502, f"{prefix}: {exc}")
     return {"ok": True}
 
 
@@ -374,8 +378,10 @@ def normalized_rule(payload):
     target_user_id = payload.get("target_user_id") or None
     target_email = str(payload.get("target_email") or "").strip() or None
     target_folder = str(payload.get("target_folder") or "").strip() or None
+    post_forward_folder = str(payload.get("post_forward_folder") or "").strip() or None
     if action == "forward" and not target_user_id and not target_email: raise HTTPException(400, "Weiterleitung benötigt ein Ziel")
     if action == "move" and (not mailbox_id or not target_folder): raise HTTPException(400, "Verschieben benötigt Postfach und Zielordner")
+    if action == "forward" and post_forward_folder and not mailbox_id: raise HTTPException(400, "Archivierung nach Weiterleitung benötigt ein konkretes Postfach")
     try: priority = int(payload.get("priority", 100))
     except (TypeError, ValueError): raise HTTPException(400, "Priorität muss eine Zahl sein")
     return {
@@ -385,6 +391,7 @@ def normalized_rule(payload):
         "target_user_id": target_user_id if action == "forward" else None,
         "target_email": target_email if action == "forward" else None,
         "target_folder": target_folder if action == "move" else None,
+        "post_forward_folder": post_forward_folder if action == "forward" else None,
         "priority": priority, "stop_processing": int(bool(payload.get("stop_processing", 1))),
     }
 
@@ -420,9 +427,15 @@ def simulate_rules(mailbox_id: int | None = None, session: str | None = Cookie(N
                 continue
             if not rule_matches(rule, message):
                 continue
-            target = rule["target_folder"] if rule.get("action") == "move" else (rule["target_name"] or rule["target_email"] or rule["user_email"])
-            actions.append({"rule_id": rule["id"], "rule_name": rule["name"], "priority": rule["priority"], "action": rule.get("action", "forward"), "target": target, "stops": bool(rule["stop_processing"])})
-            action_count += 1
+            if rule.get("action") == "move":
+                actions.append({"rule_id": rule["id"], "rule_name": rule["name"], "priority": rule["priority"], "action": "move", "target": rule["target_folder"], "stops": bool(rule["stop_processing"])})
+                action_count += 1
+            else:
+                actions.append({"rule_id": rule["id"], "rule_name": rule["name"], "priority": rule["priority"], "action": "forward", "target": rule["target_name"] or rule["target_email"] or rule["user_email"], "stops": bool(rule["stop_processing"]) and not rule.get("post_forward_folder")})
+                action_count += 1
+                if rule.get("post_forward_folder"):
+                    actions.append({"rule_id": rule["id"], "rule_name": rule["name"], "priority": rule["priority"], "action": "move", "target": rule["post_forward_folder"], "stops": bool(rule["stop_processing"])})
+                    action_count += 1
             if rule["stop_processing"]:
                 break
         if actions:
@@ -436,8 +449,8 @@ def simulate_rules(mailbox_id: int | None = None, session: str | None = Cookie(N
 def add_rule(payload: dict = Body(...), session: str | None = Cookie(None)):
     user = require_user(session)
     rule = normalized_rule(payload)
-    rule_id = db.execute("""INSERT INTO rules(name,mailbox_id,field,operator,value,action,target_user_id,target_email,target_folder,priority,active,stop_processing,created_at)
-      VALUES(?,?,?,?,?,?,?,?,?,?,1,?,?)""", (rule["name"], rule["mailbox_id"], rule["field"], rule["operator"], rule["value"], rule["action"], rule["target_user_id"], rule["target_email"], rule["target_folder"], rule["priority"], rule["stop_processing"], db.now_iso()))
+    rule_id = db.execute("""INSERT INTO rules(name,mailbox_id,field,operator,value,action,target_user_id,target_email,target_folder,post_forward_folder,priority,active,stop_processing,created_at)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,1,?,?)""", (rule["name"], rule["mailbox_id"], rule["field"], rule["operator"], rule["value"], rule["action"], rule["target_user_id"], rule["target_email"], rule["target_folder"], rule["post_forward_folder"], rule["priority"], rule["stop_processing"], db.now_iso()))
     db.audit("rule_created", actor=user["email"], rule_id=rule_id, name=rule["name"])
     return {"id": rule_id}
 
@@ -449,9 +462,9 @@ def update_rule(rule_id: int, payload: dict = Body(...), session: str | None = C
     if not current: raise HTTPException(404, "Regel nicht gefunden")
     rule = normalized_rule(payload)
     active = int(bool(payload.get("active", current["active"])))
-    db.execute("""UPDATE rules SET name=?,mailbox_id=?,field=?,operator=?,value=?,action=?,target_user_id=?,target_email=?,target_folder=?,priority=?,active=?,stop_processing=? WHERE id=?""",
-      (rule["name"], rule["mailbox_id"], rule["field"], rule["operator"], rule["value"], rule["action"], rule["target_user_id"], rule["target_email"], rule["target_folder"], rule["priority"], active, rule["stop_processing"], rule_id))
-    db.audit("rule_updated", actor=user["email"], rule_id=rule_id, name=rule["name"], rule_action=rule["action"], active=bool(active))
+    db.execute("""UPDATE rules SET name=?,mailbox_id=?,field=?,operator=?,value=?,action=?,target_user_id=?,target_email=?,target_folder=?,post_forward_folder=?,priority=?,active=?,stop_processing=? WHERE id=?""",
+      (rule["name"], rule["mailbox_id"], rule["field"], rule["operator"], rule["value"], rule["action"], rule["target_user_id"], rule["target_email"], rule["target_folder"], rule["post_forward_folder"], rule["priority"], active, rule["stop_processing"], rule_id))
+    db.audit("rule_updated", actor=user["email"], rule_id=rule_id, name=rule["name"], rule_action=rule["action"], post_forward_folder=rule["post_forward_folder"], active=bool(active))
     return {"ok": True, "id": rule_id}
 
 

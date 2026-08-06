@@ -551,8 +551,13 @@ def apply_rules(message_id):
         if not rule_matches(rule, msg):
             continue
         if test_mode_enabled():
-            target = rule["target_folder"] if rule.get("action", "forward") == "move" else (rule["target_email"] or rule["user_email"])
-            db.audit("rule_test_match", actor="test-mode", message_id=message_id, mailbox_id=msg["mailbox_id"], rule_id=rule["id"], action=rule.get("action", "forward"), target=target)
+            if rule.get("action", "forward") == "move":
+                actions = [{"action": "move", "target": rule["target_folder"]}]
+            else:
+                actions = [{"action": "forward", "target": rule["target_email"] or rule["user_email"]}]
+                if rule.get("post_forward_folder"):
+                    actions.append({"action": "move", "target": rule["post_forward_folder"]})
+            db.audit("rule_test_match", actor="test-mode", message_id=message_id, mailbox_id=msg["mailbox_id"], rule_id=rule["id"], actions=actions)
             if rule["stop_processing"]:
                 break
             continue
@@ -562,6 +567,8 @@ def apply_rules(message_id):
             else:
                 target = rule["target_email"] or rule["user_email"]
                 forward_message(message_id, target, "rule", rule["id"])
+                if rule.get("post_forward_folder"):
+                    move_message(message_id, rule["post_forward_folder"], "rule", rule["id"])
             db.execute("UPDATE messages SET matched_rule_id=? WHERE id=?", (rule["id"], message_id))
         except Exception as exc:
             db.audit("forward_failed", message_id=message_id, mailbox_id=msg["mailbox_id"], rule_id=rule["id"], error=str(exc))
