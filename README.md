@@ -66,9 +66,9 @@ Pro gemeinsamem Postfach wird ein technisches Konto benötigt, das auf das Postf
 
 Beim Anlegen und Bearbeiten steht **Verbindung testen** zur Verfügung. Dabei prüft Mailsorter TLS-Verbindung, Anmeldung und Zugriff auf den angegebenen IMAP-Ordner sowie die SMTP-Anmeldung. Es wird ausdrücklich keine Testmail gesendet. Beim Bearbeiten kann das Passwort leer bleiben; dann wird das bereits verschlüsselt gespeicherte Passwort weiterverwendet.
 
-IMAP- und SMTP-Anmeldename können getrennt gepflegt werden. Das ist besonders bei delegierten Sammelpostfächern relevant: IMAP kann je nach Exchange-Konfiguration eine Kennung wie `dienstkonto@firma.de\\sammelpostfach@firma.de` benötigen, während SMTP weiterhin mit `dienstkonto@firma.de` authentifiziert wird. Für Exchange On-Premises ist SMTP-Port 587 normalerweise mit **STARTTLS** zu kombinieren; **SSL/TLS** auf Port 587 führt zu einem Protokollfehler.
+IMAP- und SMTP-Anmeldename können getrennt gepflegt werden. Das ist besonders bei delegierten Sammelpostfächern relevant. Für das eigene Postfach lautet die NTLM-Kennung typischerweise `DOMAIN\\benutzer`; für ein delegiertes Postfach unterstützt Exchange die Form `DOMAIN\\dienstkonto/postfachalias`. SMTP authentifiziert sich weiterhin nur mit dem Dienstkonto, meist als `dienstkonto@firma.de`. Für Exchange On-Premises ist SMTP-Port 587 normalerweise mit **STARTTLS** zu kombinieren; **SSL/TLS** auf Port 587 führt zu einem Protokollfehler.
 
-Für IMAP stehen `Automatisch`, `LOGIN` und `NTLMv2 / SecureLogin` bereit. `Automatisch` versucht zuerst den normalen IMAP-Login. Lehnt Exchange diesen ab und meldet `AUTH=NTLM`, baut Mailsorter eine frische Verbindung auf und verwendet NTLMv2. Damit bleibt der Exchange-Standard `SecureLogin` nutzbar, ohne den Server auf PlainTextLogin umzustellen.
+Für IMAP stehen `Automatisch`, `LOGIN` und `NTLMv2 / SecureLogin` bereit. `Automatisch` versucht zuerst den normalen IMAP-Login. Lehnt Exchange diesen ab und meldet `AUTH=NTLM`, baut Mailsorter eine frische Verbindung auf und verwendet NTLMv2. Dabei sendet Mailsorter auf TLS-Verbindungen auch den Channel Binding Token (CBT), den Exchange Extended Protection verlangen kann. Damit bleibt der Exchange-Standard `SecureLogin` nutzbar, ohne den Server auf PlainTextLogin umzustellen.
 
 - IMAP muss am Exchange-Server aktiviert und vom Container erreichbar sein (üblich: TCP 993 mit TLS).
 - SMTP Client Submission muss erreichbar sein (üblich: TCP 587 mit STARTTLS) und das Konto muss mit der gemeinsamen Absenderadresse senden dürfen.
@@ -77,7 +77,7 @@ Für IMAP stehen `Automatisch`, `LOGIN` und `NTLMv2 / SecureLogin` bereit. `Auto
 - IMAP-Ordner werden live vom Server gelesen. Verschieben nutzt zunächst IMAP `MOVE` und fällt für ältere Server auf `COPY + Deleted + EXPUNGE` zurück.
 - Ein internes CA-Zertifikat muss im Trust Store des Containers vorhanden sein. Zertifikatsprüfung wird absichtlich nicht deaktiviert.
 
-Diese Version unterstützt Standard-IMAP- und SMTP-Authentifizierung (`LOGIN`/`PLAIN`, abhängig vom Exchange-Server). NTLM-only-Installationen benötigen entweder eine dafür freigeschaltete technische Schnittstelle oder einen zusätzlichen NTLM/EWS-Connector. Die Mailzugriffsschicht liegt isoliert in `app/exchange.py`, damit für die spätere Hybrid-Phase Microsoft Graph oder EWS ergänzt werden kann, ohne Regeln und Oberfläche neu zu bauen.
+Diese Version unterstützt Standard-IMAP-/SMTP-Authentifizierung (`LOGIN`/`PLAIN`, abhängig vom Exchange-Server) sowie IMAP über NTLMv2 mit TLS-Kanalbindung. Die Mailzugriffsschicht liegt isoliert in `app/exchange.py`, damit für die spätere Hybrid-Phase Microsoft Graph oder EWS ergänzt werden kann, ohne Regeln und Oberfläche neu zu bauen.
 
 ## Bedienlogik
 

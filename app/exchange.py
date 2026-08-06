@@ -1,4 +1,5 @@
 import email
+import hashlib
 import imaplib
 import os
 import re
@@ -10,6 +11,8 @@ from email.utils import parsedate_to_datetime
 
 import bleach
 import spnego
+from cryptography import x509
+from spnego.channel_bindings import GssChannelBindings
 
 from . import db
 from .security import decrypt
@@ -64,9 +67,40 @@ def open_imap(box):
     return imaplib.IMAP4_SSL(box["imap_host"], int(box["imap_port"]), ssl_context=ssl.create_default_context()) if box["imap_ssl"] else imaplib.IMAP4(box["imap_host"], int(box["imap_port"]))
 
 
+def imap_tls_channel_bindings(client):
+    """Build RFC 5929 tls-server-end-point bindings for Exchange Extended Protection."""
+    sock = getattr(client, "sock", None)
+    if not sock or not hasattr(sock, "getpeercert"):
+        return None
+    certificate_der = sock.getpeercert(binary_form=True)
+    if not certificate_der:
+        return None
+    certificate = x509.load_der_x509_certificate(certificate_der)
+    try:
+        algorithm = getattr(certificate.signature_hash_algorithm, "name", "sha256").lower().replace("-", "")
+    except Exception:
+        algorithm = "sha256"
+    # RFC 5929 replaces collision-prone MD5/SHA-1 certificate signatures with SHA-256.
+    if algorithm in {"md5", "sha1"}:
+        algorithm = "sha256"
+    try:
+        digest = hashlib.new(algorithm, certificate_der).digest()
+    except ValueError:
+        digest = hashlib.sha256(certificate_der).digest()
+    return GssChannelBindings(application_data=b"tls-server-end-point:" + digest)
+
+
 def authenticate_imap_ntlm(client, box, password):
     username = box.get("imap_username") or box["username"]
-    context = spnego.client(username=username, password=password, hostname=box["imap_host"], service="imap", protocol="ntlm")
+    channel_bindings = imap_tls_channel_bindings(client)
+    context = spnego.client(
+        username=username,
+        password=password,
+        hostname=box["imap_host"],
+        service="imap",
+        protocol="ntlm",
+        channel_bindings=channel_bindings,
+    )
     started = False
 
     def response(challenge):
@@ -76,7 +110,11 @@ def authenticate_imap_ntlm(client, box, password):
             return context.step()
         return context.step(challenge)
 
-    client.authenticate("NTLM", response)
+    try:
+        client.authenticate("NTLM", response)
+    except imaplib.IMAP4.error as exc:
+        binding_status = "mit TLS-Kanalbindung" if channel_bindings else "ohne TLS-Kanalbindung"
+        raise RuntimeError(f"NTLM AUTHENTICATE failed ({binding_status}): {exc}") from exc
     client._mailsorter_auth_mode = "NTLMv2"
 
 
@@ -122,8 +160,10 @@ def connection_error(exc, protocol, box):
         if int(box.get("smtp_port", 0)) == 587:
             return "Falscher TLS-Modus: Für Exchange-Port 587 STARTTLS wählen, nicht SSL/TLS."
         return "TLS-Modus passt nicht zum SMTP-Port. Für 587 meist STARTTLS, für 465 meist SSL/TLS verwenden."
-    if "LOGIN FAILED" in upper or "AUTHENTICATIONFAILED" in upper or "AUTHENTICATION FAILED" in upper:
+    if "LOGIN FAILED" in upper or "AUTHENTICATIONFAILED" in upper or "AUTHENTICATION FAILED" in upper or "AUTHENTICATE FAILED" in upper:
         if protocol == "imap":
+            if "NTLM" in upper:
+                return "Exchange lehnt NTLMv2 ab. Für ein eigenes Postfach DOMAIN\\benutzer verwenden; für ein delegiertes Postfach DOMAIN\\dienstkonto/postfachalias testen. Das Dienstkonto braucht eine primäre SMTP-Adresse und Full-Access. Falls es weiter scheitert, zeigt das Exchange-IMAP-Protokoll den genauen Ablehnungsgrund."
             return "Exchange lehnt die IMAP-Anmeldung ab. UPN (benutzer@domain), DOMAIN\\benutzer und IMAP-Freigabe prüfen. Bei delegiertem Sammelpostfach kann ein eigener IMAP-Anmeldename nötig sein; das Dienstkonto braucht eine primäre SMTP-Adresse."
         return "Exchange lehnt die SMTP-Anmeldung ab. SMTP-Anmeldename, Authentifizierung am Client-Frontend-Connector und Send-As-Berechtigung prüfen."
     return raw[:300]

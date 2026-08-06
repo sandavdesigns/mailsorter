@@ -5,7 +5,7 @@ from unittest import mock
 os.environ.setdefault("APP_SECRET", "test-secret-with-at-least-24-characters")
 
 from app import exchange
-from app.exchange import apply_rules, clean_html, connect_imap_with_password, connection_error, forward_message, move_message, rule_matches, test_mailbox_connection, test_mode_enabled
+from app.exchange import apply_rules, authenticate_imap_ntlm, clean_html, connect_imap_with_password, connection_error, forward_message, imap_tls_channel_bindings, move_message, rule_matches, test_mailbox_connection, test_mode_enabled
 from app.security import decrypt, encrypt, hash_password, verify_password
 
 
@@ -72,6 +72,30 @@ class SecurityTests(unittest.TestCase):
         imap_hint = connection_error(Exception("b'LOGIN failed.'"), "imap", {})
         self.assertIn("UPN", imap_hint)
         self.assertIn("primäre SMTP-Adresse", imap_hint)
+        ntlm_hint = connection_error(Exception("NTLM AUTHENTICATE failed (mit TLS-Kanalbindung)"), "imap", {})
+        self.assertIn("DOMAIN\\dienstkonto/postfachalias", ntlm_hint)
+        self.assertIn("Full-Access", ntlm_hint)
+
+    def test_ntlm_uses_tls_server_endpoint_channel_binding(self):
+        client = mock.MagicMock()
+        binding = mock.sentinel.channel_binding
+        context = mock.MagicMock()
+        settings = {"imap_host": "exchange.example.org", "imap_username": "DOMAIN\\svc"}
+        with mock.patch.object(exchange, "imap_tls_channel_bindings", return_value=binding), \
+             mock.patch.object(exchange.spnego, "client", return_value=context) as spnego_client:
+            authenticate_imap_ntlm(client, settings, "secret")
+        self.assertIs(spnego_client.call_args.kwargs["channel_bindings"], binding)
+        self.assertEqual(spnego_client.call_args.kwargs["protocol"], "ntlm")
+        client.authenticate.assert_called_once()
+
+    def test_tls_channel_binding_uses_sha256_for_sha1_certificate(self):
+        client = mock.MagicMock()
+        client.sock.getpeercert.return_value = b"certificate"
+        certificate = mock.MagicMock()
+        certificate.signature_hash_algorithm.name = "sha1"
+        with mock.patch.object(exchange.x509, "load_der_x509_certificate", return_value=certificate):
+            binding = imap_tls_channel_bindings(client)
+        self.assertEqual(binding.application_data, b"tls-server-end-point:" + exchange.hashlib.sha256(b"certificate").digest())
 
     def test_imap_auto_falls_back_to_ntlm(self):
         settings = {"imap_host": "exchange.example.org", "imap_port": 993, "imap_ssl": True, "imap_username": "DOMAIN\\svc", "username": "DOMAIN\\svc", "imap_auth_mode": "auto"}
