@@ -446,6 +446,7 @@ def create_folder(box, name, parent=""):
         entries = folder_entries(client)
         delimiter = next((entry["delimiter"] for entry in entries if entry["delimiter"]), "/")
         wire_encoding = next((entry["wire_encoding"] for entry in entries if entry["wire_encoding"] != "imap-utf7"), "imap-utf7")
+        parent = parent or str(box.get("folder") or "INBOX").strip()
         if parent and parent not in {entry["name"] for entry in entries}:
             raise ValueError("Übergeordneter Ordner wurde nicht gefunden")
         full_name = f"{parent}{delimiter}{name}" if parent else name
@@ -455,6 +456,9 @@ def create_folder(box, name, parent=""):
         if status != "OK":
             reason = " ".join(item.decode(errors="replace") if isinstance(item, bytes) else str(item) for item in details or [])
             raise RuntimeError(f"Exchange hat den Ordner nicht angelegt: {reason or status}")
+        refreshed = folder_entries(client)
+        if full_name not in {entry["name"] for entry in refreshed}:
+            raise RuntimeError(f"Exchange meldet CREATE OK, aber der Ordner {full_name} erscheint danach nicht in der IMAP-Ordnerliste")
         return full_name
     finally:
         try: client.logout()

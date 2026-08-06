@@ -105,7 +105,10 @@ class SecurityTests(unittest.TestCase):
 
     def test_exchange_subfolder_creation_supports_umlauts(self):
         client = mock.MagicMock()
-        client.list.return_value = ("OK", [b'(\\HasChildren) "/" "INBOX"', b'(\\HasNoChildren) "/" "INBOX/Archiv"'])
+        client.list.side_effect = [
+            ("OK", [b'(\\HasChildren) "/" "INBOX"', b'(\\HasNoChildren) "/" "INBOX/Archiv"']),
+            ("OK", [b'(\\HasChildren) "/" "INBOX"', b'(\\HasChildren) "/" "INBOX/Archiv"', b'(\\HasNoChildren) "/" "INBOX/Archiv/Pr&APw-fung"']),
+        ]
         client.create.return_value = ("OK", [b"CREATE completed"])
         with mock.patch.object(exchange, "test_mode_enabled", return_value=False), \
              mock.patch.object(exchange, "connect_imap", return_value=client):
@@ -113,6 +116,28 @@ class SecurityTests(unittest.TestCase):
         self.assertEqual(created, "INBOX/Archiv/Prüfung")
         client.create.assert_called_once_with(b'"INBOX/Archiv/Pr&APw-fung"')
         client.logout.assert_called_once()
+
+    def test_exchange_folder_creation_defaults_under_configured_folder(self):
+        client = mock.MagicMock()
+        client.list.side_effect = [
+            ("OK", [b'(\\HasChildren) "/" "INBOX"']),
+            ("OK", [b'(\\HasChildren) "/" "INBOX"', b'(\\HasNoChildren) "/" "INBOX/Rechnungen"']),
+        ]
+        client.create.return_value = ("OK", [b"CREATE completed"])
+        with mock.patch.object(exchange, "test_mode_enabled", return_value=False), \
+             mock.patch.object(exchange, "connect_imap", return_value=client):
+            created = create_folder({"id": 2, "folder": "INBOX"}, "Rechnungen", "")
+        self.assertEqual(created, "INBOX/Rechnungen")
+        client.create.assert_called_once_with(b'"INBOX/Rechnungen"')
+
+    def test_exchange_folder_creation_requires_created_folder_to_be_listed(self):
+        client = mock.MagicMock()
+        client.list.return_value = ("OK", [b'(\\HasChildren) "/" "INBOX"'])
+        client.create.return_value = ("OK", [b"CREATE completed"])
+        with mock.patch.object(exchange, "test_mode_enabled", return_value=False), \
+             mock.patch.object(exchange, "connect_imap", return_value=client), \
+             self.assertRaisesRegex(RuntimeError, "erscheint danach nicht"):
+            create_folder({"id": 2, "folder": "INBOX"}, "Rechnungen", "")
 
     def test_exchange_folder_list_decodes_utf7_utf8_and_windows_umlauts(self):
         client = mock.MagicMock()
@@ -127,7 +152,10 @@ class SecurityTests(unittest.TestCase):
 
     def test_exchange_folder_creation_follows_direct_utf8_server_encoding(self):
         client = mock.MagicMock()
-        client.list.return_value = ("OK", [b'(\\HasChildren) "/" "INBOX/B\xc3\xbcro"'])
+        client.list.side_effect = [
+            ("OK", [b'(\\HasChildren) "/" "INBOX/B\xc3\xbcro"']),
+            ("OK", [b'(\\HasChildren) "/" "INBOX/B\xc3\xbcro"', b'(\\HasNoChildren) "/" "INBOX/B\xc3\xbcro/R\xc3\xbcckfragen"']),
+        ]
         client.create.return_value = ("OK", [b"CREATE completed"])
         with mock.patch.object(exchange, "test_mode_enabled", return_value=False), \
              mock.patch.object(exchange, "connect_imap", return_value=client):
