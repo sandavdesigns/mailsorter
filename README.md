@@ -25,7 +25,8 @@ Mailsorter ist eine browserbasierte Verteilstelle für gemeinsame Firmenpostfäc
 cp .env.example .env
 openssl rand -hex 32
 # APP_SECRET, ADMIN_PASSWORD und bei Bedarf die übrigen Werte in .env setzen
-docker compose up -d --build
+docker compose pull
+docker compose up -d
 ```
 
 Danach ist Mailsorter unter `http://SERVER:8080` erreichbar. Die erste Anmeldung erfolgt mit `admin@local` und dem in `ADMIN_PASSWORD` gesetzten Passwort.
@@ -43,6 +44,10 @@ Wichtig: `APP_SECRET` nach dem ersten Start nicht ändern. Damit werden die Post
    - optional `POLL_INTERVAL_SECONDS=60` und `TZ=Europe/Berlin`
 4. Stack deployen und TCP-Port 8080 intern zum Reverse Proxy freigeben.
 5. Für Produktion TLS am Reverse Proxy terminieren und `SESSION_HTTPS_ONLY=true` setzen.
+
+Der Portainer-Server baut Mailsorter nicht selbst. Bei jedem Push auf `main` erzeugt GitHub Actions ein Multi-Arch-Image für AMD64 und ARM64 und veröffentlicht es als `ghcr.io/sandavdesigns/mailsorter:latest`. Portainer lädt nur dieses fertige Image. Dadurch wird auf dem Docker-Server kein funktionierender BuildKit-Worker benötigt.
+
+Falls Portainer beim ersten Abruf `denied` meldet, muss das Container-Paket auf GitHub einmalig unter **Packages → mailsorter → Package settings → Change visibility → Public** öffentlich gesetzt werden. Alternativ kann die GHCR-Registry mit einem GitHub-Token in Portainer hinterlegt werden.
 
 Das Volume `mailsorter_data` enthält Datenbank, Regeln, Audit-Log und verschlüsselte Zugangsdaten. Es muss in das Backup aufgenommen werden. Das `APP_SECRET` separat sichern.
 
