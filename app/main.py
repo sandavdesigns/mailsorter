@@ -14,7 +14,7 @@ from fastapi.staticfiles import StaticFiles
 
 from . import db
 from .exchange import create_folder, fetch_mailbox, forward_message, list_folders, move_message, rule_matches, test_mailbox_connection, test_mode_enabled, test_mode_value
-from .security import decrypt, encrypt, hash_password, new_session, token_hash, verify_password
+from .security import decrypt, encrypt, hash_password, new_session, session_max_age_seconds, token_hash, verify_password
 
 STATIC = Path(__file__).parent / "static"
 VERSION_FILE = Path(__file__).parent.parent / "VERSION"
@@ -170,7 +170,7 @@ def login(response: Response, payload: dict = Body(...)):
         raise HTTPException(401, "E-Mail oder Passwort falsch")
     token, digest, expires = new_session()
     db.execute("INSERT INTO sessions(token_hash,user_id,expires_at,created_at) VALUES(?,?,?,?)", (digest, user["id"], expires, db.now_iso()))
-    response.set_cookie("session", token, httponly=True, samesite="strict", secure=os.getenv("SESSION_HTTPS_ONLY", "false").lower() == "true", max_age=43200)
+    response.set_cookie("session", token, httponly=True, samesite="strict", secure=os.getenv("SESSION_HTTPS_ONLY", "false").lower() == "true", max_age=session_max_age_seconds())
     db.audit("login", actor=user["email"])
     return {"id": user["id"], "email": user["email"], "name": user["name"], "role": user["role"]}
 

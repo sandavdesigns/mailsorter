@@ -49,7 +49,7 @@ Wichtig: `APP_SECRET` nach dem ersten Start nicht ändern. Damit werden die Post
    - `MAILSORTER_PORT`: freier Port auf dem Docker-Host, beispielsweise `8081`
    - `TEST_MODE=true`: sichere Voreinstellung für Einrichtung und Regeltests
    - `SESSION_HTTPS_ONLY=true`, sobald der Zugriff über HTTPS erfolgt
-   - optional `POLL_INTERVAL_SECONDS=60`, `MAX_ATTACHMENT_MB=50`, `MAX_MESSAGE_ATTACHMENTS_MB=100` und `TZ=Europe/Berlin`
+   - optional `SESSION_MAX_AGE_DAYS=30`, `POLL_INTERVAL_SECONDS=60`, `MAX_ATTACHMENT_MB=50`, `MAX_MESSAGE_ATTACHMENTS_MB=100` und `TZ=Europe/Berlin`
 4. Stack deployen und den mit `MAILSORTER_PORT` festgelegten TCP-Port zum Reverse Proxy freigeben. Der interne Container-Port bleibt immer 8080.
 5. Für Produktion TLS am Reverse Proxy terminieren und `SESSION_HTTPS_ONLY=true` setzen.
 

@@ -9,7 +9,7 @@ os.environ.setdefault("APP_SECRET", "test-secret-with-at-least-24-characters")
 
 from app import db, exchange, main
 from app.exchange import apply_rules, authenticate_imap_ntlm, clean_html, connect_imap_with_password, connection_error, create_folder, decoded, forward_message, imap_mailbox_arg, imap_tls_channel_bindings, imap_utf7_decode, imap_utf7_encode, message_attachments, message_bodies, move_message, rule_matches, test_mailbox_connection, test_mode_enabled, test_mode_value
-from app.security import decrypt, encrypt, hash_password, verify_password
+from app.security import decrypt, encrypt, hash_password, session_max_age_seconds, verify_password
 
 
 class SecurityTests(unittest.TestCase):
@@ -586,10 +586,19 @@ class SecurityTests(unittest.TestCase):
             with mock.patch.object(main, "require_admin", return_value={"id": 1, "email": "admin@example.org", "role": "admin"}):
                 created = main.add_user({"email": " agent@example.org ", "name": " Agent ", "role": "agent", "password": "start-password"}, session=None)
             response = main.Response()
-            logged_in = main.login(response, {"email": "agent@example.org", "password": "start-password"})
+            with mock.patch.dict(os.environ, {"SESSION_MAX_AGE_DAYS": "30"}, clear=False):
+                logged_in = main.login(response, {"email": "agent@example.org", "password": "start-password"})
             self.assertEqual(logged_in["id"], created["id"])
             self.assertEqual(logged_in["role"], "agent")
-            self.assertIn("session=", response.headers["set-cookie"])
+            cookie = response.headers["set-cookie"]
+            self.assertIn("session=", cookie)
+            self.assertIn("Max-Age=2592000", cookie)
+
+    def test_session_max_age_is_configurable_in_days(self):
+        with mock.patch.dict(os.environ, {"SESSION_MAX_AGE_DAYS": "90"}, clear=False):
+            self.assertEqual(session_max_age_seconds(), 90 * 24 * 60 * 60)
+        with mock.patch.dict(os.environ, {"SESSION_MAX_AGE_DAYS": "bad"}, clear=False):
+            self.assertEqual(session_max_age_seconds(), 30 * 24 * 60 * 60)
 
     def test_imap_auto_falls_back_to_ntlm(self):
         settings = {"imap_host": "exchange.example.org", "imap_port": 993, "imap_ssl": True, "imap_username": "DOMAIN\\svc", "username": "DOMAIN\\svc", "imap_auth_mode": "auto"}

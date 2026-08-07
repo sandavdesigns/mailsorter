@@ -8,6 +8,9 @@ from datetime import datetime, timedelta, timezone
 from cryptography.fernet import Fernet
 
 
+DEFAULT_SESSION_DAYS = 30
+
+
 def _secret():
     value = os.getenv("APP_SECRET", "")
     if len(value) < 24:
@@ -41,9 +44,17 @@ def verify_password(password, stored):
         return False
 
 
+def session_max_age_seconds():
+    try:
+        days = int(os.getenv("SESSION_MAX_AGE_DAYS", str(DEFAULT_SESSION_DAYS)))
+    except (TypeError, ValueError):
+        days = DEFAULT_SESSION_DAYS
+    return max(1, days) * 24 * 60 * 60
+
+
 def new_session():
     token = secrets.token_urlsafe(32)
-    return token, hashlib.sha256(token.encode()).hexdigest(), (datetime.now(timezone.utc) + timedelta(hours=12)).isoformat()
+    return token, hashlib.sha256(token.encode()).hexdigest(), (datetime.now(timezone.utc) + timedelta(seconds=session_max_age_seconds())).isoformat()
 
 
 def token_hash(token):

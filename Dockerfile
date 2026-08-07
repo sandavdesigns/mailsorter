@@ -6,7 +6,7 @@ LABEL org.opencontainers.image.source="https://github.com/sandavdesigns/mailsort
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     APP_DATA_DIR=/data
-ARG APP_VERSION=v0.3.0
+ARG APP_VERSION=v0.3.1
 ENV APP_VERSION=${APP_VERSION}
 
 WORKDIR /app
