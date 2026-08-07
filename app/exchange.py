@@ -499,7 +499,7 @@ def move_message(message_id, folder, actor="system", rule_id=None):
     db.audit("message_moved", actor=actor, message_id=message_id, mailbox_id=msg["mailbox_id"], folder=folder, rule_id=rule_id)
 
 
-def fetch_mailbox(box):
+def fetch_mailbox(box, process_rules=True):
     client = connect_imap(box)
     count = removed = 0
     try:
@@ -541,7 +541,8 @@ def fetch_mailbox(box):
                 attachments = store_message_attachments(message_id, msg)
                 db.audit("message_received", mailbox_id=box["id"], message_id=message_id,
                          subject=decoded(msg.get("Subject")), attachments=len(attachments))
-                apply_rules(message_id)
+                if process_rules:
+                    apply_rules(message_id)
                 count += 1
         db.execute("UPDATE mailboxes SET last_sync_at=?,last_error=NULL WHERE id=?", (db.now_iso(), box["id"]))
         return {"new_messages": count, "removed_messages": removed}

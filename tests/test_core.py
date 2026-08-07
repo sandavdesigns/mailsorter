@@ -343,21 +343,33 @@ class SecurityTests(unittest.TestCase):
             self.assertIsNotNone(audit)
             self.assertIsNone(audit["message_id"])
 
-    def test_auto_sync_only_fetches_enabled_mailboxes(self):
+    def test_auto_sync_only_fetches_enabled_mailboxes_without_audit_noise(self):
         with tempfile.TemporaryDirectory() as temp_dir, \
              mock.patch.object(db, "DATA_DIR", Path(temp_dir)), \
              mock.patch.object(db, "DB_PATH", Path(temp_dir) / "test.sqlite3"):
             db.init_db()
-            auto_id = db.execute("""INSERT INTO mailboxes(name,email,imap_host,smtp_host,username,password_enc,folder,active,auto_sync,created_at)
-              VALUES(?,?,?,?,?,?,?,?,?,?)""", ("Auto", "auto@example.org", "imap", "smtp", "svc", "encrypted", "INBOX", 1, 1, db.now_iso()))
-            db.execute("""INSERT INTO mailboxes(name,email,imap_host,smtp_host,username,password_enc,folder,active,auto_sync,created_at)
-              VALUES(?,?,?,?,?,?,?,?,?,?)""", ("Manuell", "manual@example.org", "imap", "smtp", "svc", "encrypted", "INBOX", 1, 0, db.now_iso()))
+            auto_id = db.execute("""INSERT INTO mailboxes(name,email,imap_host,smtp_host,username,password_enc,folder,active,auto_sync,auto_process,created_at)
+              VALUES(?,?,?,?,?,?,?,?,?,?,?)""", ("Auto", "auto@example.org", "imap", "smtp", "svc", "encrypted", "INBOX", 1, 1, 0, db.now_iso()))
+            db.execute("""INSERT INTO mailboxes(name,email,imap_host,smtp_host,username,password_enc,folder,active,auto_sync,auto_process,created_at)
+              VALUES(?,?,?,?,?,?,?,?,?,?,?)""", ("Manuell", "manual@example.org", "imap", "smtp", "svc", "encrypted", "INBOX", 1, 0, 1, db.now_iso()))
             with mock.patch.object(main, "fetch_mailbox", return_value={"new_messages": 2, "removed_messages": 1}) as fetch:
                 main.sync_all()
             fetch.assert_called_once()
             self.assertEqual(fetch.call_args.args[0]["id"], auto_id)
-            audit = db.row("SELECT * FROM audit_log WHERE action='auto_sync'")
-            self.assertIsNotNone(audit)
+            self.assertEqual(fetch.call_args.kwargs["process_rules"], False)
+            self.assertIsNone(db.row("SELECT * FROM audit_log WHERE action='auto_sync'"))
+
+    def test_auto_process_controls_rule_processing_after_automatic_fetch(self):
+        with tempfile.TemporaryDirectory() as temp_dir, \
+             mock.patch.object(db, "DATA_DIR", Path(temp_dir)), \
+             mock.patch.object(db, "DB_PATH", Path(temp_dir) / "test.sqlite3"):
+            db.init_db()
+            process_id = db.execute("""INSERT INTO mailboxes(name,email,imap_host,smtp_host,username,password_enc,folder,active,auto_sync,auto_process,created_at)
+              VALUES(?,?,?,?,?,?,?,?,?,?,?)""", ("Auto", "auto@example.org", "imap", "smtp", "svc", "encrypted", "INBOX", 1, 1, 1, db.now_iso()))
+            with mock.patch.object(main, "fetch_mailbox", return_value={"new_messages": 1, "removed_messages": 0}) as fetch:
+                main.sync_all()
+            self.assertEqual(fetch.call_args.args[0]["id"], process_id)
+            self.assertEqual(fetch.call_args.kwargs["process_rules"], True)
 
     def test_system_interval_can_be_updated(self):
         with tempfile.TemporaryDirectory() as temp_dir, \
@@ -645,6 +657,23 @@ class SecurityTests(unittest.TestCase):
             cookie = response.headers["set-cookie"]
             self.assertIn("session=", cookie)
             self.assertIn("Max-Age=2592000", cookie)
+
+    def test_admin_can_reset_user_password_and_invalidate_sessions(self):
+        with tempfile.TemporaryDirectory() as temp_dir, \
+             mock.patch.object(db, "DATA_DIR", Path(temp_dir)), \
+             mock.patch.object(db, "DB_PATH", Path(temp_dir) / "test.sqlite3"):
+            db.init_db()
+            admin_id = db.execute("INSERT INTO users(email,name,role,password_hash,created_at) VALUES(?,?,?,?,?)", ("admin@example.org", "Admin", "admin", hash_password("admin-password"), db.now_iso()))
+            agent_id = db.execute("INSERT INTO users(email,name,role,password_hash,created_at) VALUES(?,?,?,?,?)", ("agent@example.org", "Agent", "agent", hash_password("old-password"), db.now_iso()))
+            db.execute("INSERT INTO sessions(token_hash,user_id,expires_at,created_at) VALUES(?,?,?,?)", (main.token_hash("plain-session-token"), agent_id, "2999-01-01T00:00:00+00:00", db.now_iso()))
+            with mock.patch.object(main, "require_admin", return_value={"id": admin_id, "email": "admin@example.org", "role": "admin"}):
+                result = main.reset_user_password(agent_id, {"password": "new-password"}, session=None)
+            self.assertTrue(result["ok"])
+            user = db.row("SELECT * FROM users WHERE id=?", (agent_id,))
+            self.assertTrue(verify_password("new-password", user["password_hash"]))
+            self.assertFalse(verify_password("old-password", user["password_hash"]))
+            self.assertIsNone(db.row("SELECT * FROM sessions WHERE user_id=?", (agent_id,)))
+            self.assertIsNotNone(db.row("SELECT * FROM audit_log WHERE action='user_password_reset'"))
 
     def test_session_max_age_is_configurable_in_days(self):
         with mock.patch.dict(os.environ, {"SESSION_MAX_AGE_DAYS": "90"}, clear=False):

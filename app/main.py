@@ -66,8 +66,7 @@ def poll_interval_seconds():
 def sync_all():
     for box in db.rows("SELECT * FROM mailboxes WHERE active=1 AND auto_sync=1"):
         try:
-            result = fetch_mailbox(box)
-            db.audit("auto_sync", mailbox_id=box["id"], new_messages=result["new_messages"], removed_messages=result["removed_messages"])
+            fetch_mailbox(box, process_rules=bool(box.get("auto_process", 0)))
         except Exception as exc:
             db.execute("UPDATE mailboxes SET last_error=? WHERE id=?", (str(exc)[:500], box["id"]))
             db.audit("sync_failed", mailbox_id=box["id"], error=str(exc)[:500])
@@ -340,7 +339,7 @@ def mailboxes(session: str | None = Cookie(None)):
     access, args = mailbox_table_filter(user, "b")
     return db.rows(f"""SELECT b.id,b.name,b.email,b.imap_host,b.imap_port,b.smtp_host,b.smtp_port,b.username,
       b.imap_username,b.smtp_username,b.imap_auth_mode,b.imap_ssl,b.smtp_mode,b.folder,b.active,b.last_sync_at,
-      b.auto_sync,b.last_error,b.created_at,(SELECT count(*) FROM messages m WHERE m.mailbox_id=b.id) message_count,
+      b.auto_sync,b.auto_process,b.last_error,b.created_at,(SELECT count(*) FROM messages m WHERE m.mailbox_id=b.id) message_count,
       (SELECT count(*) FROM attachments a JOIN messages m ON m.id=a.message_id WHERE m.mailbox_id=b.id) attachment_count,
       (SELECT count(*) FROM rules r WHERE r.mailbox_id=b.id) rule_count,
       (SELECT count(*) FROM mailbox_contacts c WHERE c.mailbox_id=b.id AND c.active=1) contact_count
@@ -357,8 +356,8 @@ def add_mailbox(payload: dict = Body(...), session: str | None = Cookie(None)):
     if not imap_username: raise HTTPException(400, "IMAP-Anmeldename fehlt")
     auth_mode = payload.get("imap_auth_mode", "auto")
     if auth_mode not in {"auto", "login", "ntlm"}: raise HTTPException(400, "Ungültiger IMAP-Authentifizierungsmodus")
-    box_id = db.execute("""INSERT INTO mailboxes(name,email,imap_host,imap_port,smtp_host,smtp_port,username,imap_username,smtp_username,imap_auth_mode,password_enc,imap_ssl,smtp_mode,folder,auto_sync,created_at)
-      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (payload["name"], payload["email"], payload["imap_host"], int(payload.get("imap_port",993)), payload["smtp_host"], int(payload.get("smtp_port",587)), imap_username, imap_username, smtp_username, auth_mode, encrypt(payload["password"]), int(bool(payload.get("imap_ssl",True))), payload.get("smtp_mode","starttls"), payload.get("folder","INBOX"), int(bool(payload.get("auto_sync", False))), db.now_iso()))
+    box_id = db.execute("""INSERT INTO mailboxes(name,email,imap_host,imap_port,smtp_host,smtp_port,username,imap_username,smtp_username,imap_auth_mode,password_enc,imap_ssl,smtp_mode,folder,auto_sync,auto_process,created_at)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (payload["name"], payload["email"], payload["imap_host"], int(payload.get("imap_port",993)), payload["smtp_host"], int(payload.get("smtp_port",587)), imap_username, imap_username, smtp_username, auth_mode, encrypt(payload["password"]), int(bool(payload.get("imap_ssl",True))), payload.get("smtp_mode","starttls"), payload.get("folder","INBOX"), int(bool(payload.get("auto_sync", False))), int(bool(payload.get("auto_process", False))), db.now_iso()))
     db.audit("mailbox_created", actor=user["email"], mailbox_id=box_id, name=payload["name"])
     return {"id": box_id}
 
@@ -457,9 +456,9 @@ def update_mailbox(mailbox_id: int, payload: dict = Body(...), session: str | No
     password_enc = encrypt(payload["password"]) if payload.get("password") else current["password_enc"]
     auth_mode = payload.get("imap_auth_mode", current.get("imap_auth_mode") or "auto")
     if auth_mode not in {"auto", "login", "ntlm"}: raise HTTPException(400, "Ungültiger IMAP-Authentifizierungsmodus")
-    db.execute("""UPDATE mailboxes SET name=?,email=?,imap_host=?,imap_port=?,smtp_host=?,smtp_port=?,username=?,imap_username=?,smtp_username=?,imap_auth_mode=?,password_enc=?,imap_ssl=?,smtp_mode=?,folder=?,active=?,auto_sync=?,last_error=NULL WHERE id=?""",
-      (payload["name"], payload["email"], payload["imap_host"], int(payload.get("imap_port",993)), payload["smtp_host"], int(payload.get("smtp_port",587)), imap_username, imap_username, smtp_username, auth_mode, password_enc, int(bool(payload.get("imap_ssl",True))), payload.get("smtp_mode","starttls"), payload.get("folder","INBOX"), int(bool(payload.get("active", current["active"]))), int(bool(payload.get("auto_sync", current.get("auto_sync", 0)))), mailbox_id))
-    db.audit("mailbox_updated", actor=user["email"], mailbox_id=mailbox_id, name=payload["name"], password_changed=bool(payload.get("password")), auto_sync=bool(payload.get("auto_sync", current.get("auto_sync", 0))))
+    db.execute("""UPDATE mailboxes SET name=?,email=?,imap_host=?,imap_port=?,smtp_host=?,smtp_port=?,username=?,imap_username=?,smtp_username=?,imap_auth_mode=?,password_enc=?,imap_ssl=?,smtp_mode=?,folder=?,active=?,auto_sync=?,auto_process=?,last_error=NULL WHERE id=?""",
+      (payload["name"], payload["email"], payload["imap_host"], int(payload.get("imap_port",993)), payload["smtp_host"], int(payload.get("smtp_port",587)), imap_username, imap_username, smtp_username, auth_mode, password_enc, int(bool(payload.get("imap_ssl",True))), payload.get("smtp_mode","starttls"), payload.get("folder","INBOX"), int(bool(payload.get("active", current["active"]))), int(bool(payload.get("auto_sync", current.get("auto_sync", 0)))), int(bool(payload.get("auto_process", current.get("auto_process", 0)))), mailbox_id))
+    db.audit("mailbox_updated", actor=user["email"], mailbox_id=mailbox_id, name=payload["name"], password_changed=bool(payload.get("password")), auto_sync=bool(payload.get("auto_sync", current.get("auto_sync", 0))), auto_process=bool(payload.get("auto_process", current.get("auto_process", 0))))
     return {"ok": True}
 
 
@@ -488,7 +487,7 @@ def sync_mailbox(mailbox_id: int, session: str | None = Cookie(None)):
     ensure_mailbox_access(user, mailbox_id)
     box = db.row("SELECT * FROM mailboxes WHERE id=?", (mailbox_id,))
     if not box: raise HTTPException(404, "Postfach nicht gefunden")
-    try: result = fetch_mailbox(box)
+    try: result = fetch_mailbox(box, process_rules=True)
     except Exception as exc: raise HTTPException(502, f"Synchronisierung fehlgeschlagen: {exc}")
     db.audit("manual_sync", actor=user["email"], mailbox_id=mailbox_id, new_messages=result["new_messages"], removed_messages=result["removed_messages"])
     return result
@@ -557,6 +556,19 @@ def add_user(payload: dict = Body(...), session: str | None = Cookie(None)):
     except Exception: raise HTTPException(409, "E-Mail bereits vorhanden")
     db.audit("user_created", actor=admin["email"], user_id=user_id, email=email)
     return {"id": user_id}
+
+
+@app.put("/api/users/{user_id}/password")
+def reset_user_password(user_id: int, payload: dict = Body(...), session: str | None = Cookie(None)):
+    admin = require_admin(session)
+    user = db.row("SELECT id,email,name FROM users WHERE id=?", (user_id,))
+    if not user: raise HTTPException(404, "Benutzer nicht gefunden")
+    password = str(payload.get("password") or "")
+    if len(password) < 10: raise HTTPException(400, "Passwort muss mindestens 10 Zeichen lang sein")
+    db.execute("UPDATE users SET password_hash=? WHERE id=?", (hash_password(password), user_id))
+    db.execute("DELETE FROM sessions WHERE user_id=?", (user_id,))
+    db.audit("user_password_reset", actor=admin["email"], user_id=user_id, email=user["email"])
+    return {"ok": True, "id": user_id}
 
 
 @app.get("/api/rules")

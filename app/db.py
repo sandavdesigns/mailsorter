@@ -46,7 +46,7 @@ def init_db():
           imap_auth_mode TEXT NOT NULL DEFAULT 'auto', password_enc TEXT NOT NULL,
           imap_ssl INTEGER NOT NULL DEFAULT 1, smtp_mode TEXT NOT NULL DEFAULT 'starttls',
           folder TEXT NOT NULL DEFAULT 'INBOX', active INTEGER NOT NULL DEFAULT 1,
-          auto_sync INTEGER NOT NULL DEFAULT 0,
+          auto_sync INTEGER NOT NULL DEFAULT 0, auto_process INTEGER NOT NULL DEFAULT 0,
           last_sync_at TEXT, last_error TEXT, created_at TEXT NOT NULL
         );
         CREATE TABLE IF NOT EXISTS settings (
@@ -129,6 +129,9 @@ def init_db():
             db.execute("ALTER TABLE mailboxes ADD COLUMN imap_auth_mode TEXT NOT NULL DEFAULT 'auto'")
         if "auto_sync" not in mailbox_columns:
             db.execute("ALTER TABLE mailboxes ADD COLUMN auto_sync INTEGER NOT NULL DEFAULT 0")
+        if "auto_process" not in mailbox_columns:
+            db.execute("ALTER TABLE mailboxes ADD COLUMN auto_process INTEGER NOT NULL DEFAULT 0")
+            db.execute("UPDATE mailboxes SET auto_process=auto_sync")
         message_columns = {r[1] for r in db.execute("PRAGMA table_info(messages)")}
         if "parser_version" not in message_columns:
             # Existing messages are refreshed from Exchange on their next mailbox sync.
