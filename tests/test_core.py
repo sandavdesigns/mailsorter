@@ -512,6 +512,58 @@ class SecurityTests(unittest.TestCase):
             move.assert_not_called()
             self.assertIsNotNone(db.row("SELECT * FROM audit_log WHERE action='rule_apply_test'"))
 
+    def test_saved_rule_can_be_copied_as_inactive_rule(self):
+        with tempfile.TemporaryDirectory() as temp_dir, \
+             mock.patch.object(db, "DATA_DIR", Path(temp_dir)), \
+             mock.patch.object(db, "DB_PATH", Path(temp_dir) / "test.sqlite3"):
+            db.init_db()
+            mailbox_id = db.execute("""INSERT INTO mailboxes(name,email,imap_host,smtp_host,username,password_enc,folder,active,created_at)
+              VALUES(?,?,?,?,?,?,?,?,?)""", ("Zentrale", "zentrale@example.org", "imap", "smtp", "svc", "encrypted", "INBOX", 1, db.now_iso()))
+            rule_id = db.execute("""INSERT INTO rules(name,mailbox_id,field,operator,value,value_logic,action,target_email,post_forward_folder,priority,active,stop_processing,created_at)
+              VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""", ("Rechnungen", mailbox_id, "subject", "contains", "Rechnung\nMahnung", "any", "forward", "team@example.org", "INBOX/Archiv", 100, 1, 0, db.now_iso()))
+            with mock.patch.object(main, "require_user", return_value={"email": "editor@example.org", "role": "admin"}):
+                result = main.copy_rule(rule_id, session=None)
+            copied = db.row("SELECT * FROM rules WHERE id=?", (result["id"],))
+            self.assertEqual(result["active"], False)
+            self.assertEqual(copied["name"], "Kopie von Rechnungen")
+            self.assertEqual(copied["mailbox_id"], mailbox_id)
+            self.assertEqual(copied["value"], "Rechnung\nMahnung")
+            self.assertEqual(copied["value_logic"], "any")
+            self.assertEqual(copied["target_email"], "team@example.org")
+            self.assertEqual(copied["post_forward_folder"], "INBOX/Archiv")
+            self.assertEqual(copied["active"], 0)
+            self.assertEqual(copied["stop_processing"], 0)
+            self.assertIsNotNone(db.row("SELECT * FROM audit_log WHERE action='rule_copied'"))
+
+    def test_apply_multiple_saved_rules_to_existing_messages_is_dry_run_in_test_mode(self):
+        with tempfile.TemporaryDirectory() as temp_dir, \
+             mock.patch.object(db, "DATA_DIR", Path(temp_dir)), \
+             mock.patch.object(db, "DB_PATH", Path(temp_dir) / "test.sqlite3"):
+            db.init_db()
+            mailbox_id = db.execute("""INSERT INTO mailboxes(name,email,imap_host,smtp_host,username,password_enc,folder,active,created_at)
+              VALUES(?,?,?,?,?,?,?,?,?)""", ("Zentrale", "zentrale@example.org", "imap", "smtp", "svc", "encrypted", "INBOX", 1, db.now_iso()))
+            rule_one = db.execute("""INSERT INTO rules(name,mailbox_id,field,operator,value,action,target_email,priority,active,stop_processing,created_at)
+              VALUES(?,?,?,?,?,?,?,?,?,?,?)""", ("Rechnungen", mailbox_id, "subject", "contains", "Rechnung", "forward", "team@example.org", 100, 1, 1, db.now_iso()))
+            rule_two = db.execute("""INSERT INTO rules(name,mailbox_id,field,operator,value,action,target_folder,priority,active,stop_processing,created_at)
+              VALUES(?,?,?,?,?,?,?,?,?,?,?)""", ("Fragen", mailbox_id, "subject", "contains", "Frage", "move", "INBOX/Rückfragen", 110, 1, 1, db.now_iso()))
+            db.execute("""INSERT INTO messages(mailbox_id,uid,sender,recipients,subject,received_at,text_body,html_body,created_at)
+              VALUES(?,?,?,?,?,?,?,?,?)""", (mailbox_id, "1", "a@example.org", "zentrale@example.org", "Rechnung 1", db.now_iso(), "Text", "<p>Text</p>", db.now_iso()))
+            db.execute("""INSERT INTO messages(mailbox_id,uid,sender,recipients,subject,received_at,text_body,html_body,created_at)
+              VALUES(?,?,?,?,?,?,?,?,?)""", (mailbox_id, "2", "b@example.org", "zentrale@example.org", "Frage 1", db.now_iso(), "Text", "<p>Text</p>", db.now_iso()))
+            with mock.patch.dict(os.environ, {"TEST_MODE": "true"}, clear=False), \
+                 mock.patch.object(main, "require_user", return_value={"email": "editor@example.org", "role": "admin"}), \
+                 mock.patch.object(main, "forward_message") as forward, \
+                 mock.patch.object(main, "move_message") as move:
+                result = main.apply_multiple_rules_to_existing({"rule_ids": [rule_one, rule_two, rule_one]}, session=None)
+            self.assertTrue(result["dry_run"])
+            self.assertEqual(result["requested"], 2)
+            self.assertEqual(result["processed"], 2)
+            self.assertEqual(result["matched"], 2)
+            self.assertEqual(result["applied"], 0)
+            forward.assert_not_called()
+            move.assert_not_called()
+            self.assertIsNotNone(db.row("SELECT * FROM audit_log WHERE action='rules_batch_applied_existing'"))
+
     def test_apply_saved_rule_to_existing_messages_executes_live_once(self):
         with tempfile.TemporaryDirectory() as temp_dir, \
              mock.patch.object(db, "DATA_DIR", Path(temp_dir)), \

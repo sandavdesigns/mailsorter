@@ -631,6 +631,49 @@ def import_rules(payload: dict = Body(...), session: str | None = Cookie(None)):
     return {"ok": True, "imported": imported, "skipped": skipped}
 
 
+def get_saved_rule_for_apply(rule_id, user):
+    rule = db.row("""SELECT r.*,u.name target_name,u.email user_email FROM rules r
+      LEFT JOIN users u ON u.id=r.target_user_id WHERE r.id=?""", (rule_id,))
+    if not rule: raise HTTPException(404, "Regel nicht gefunden")
+    if not rule["active"]: raise HTTPException(409, "Nur aktive Regeln können angewendet werden")
+    if rule["mailbox_id"] is None:
+        raise HTTPException(400, "Diese alte globale Regel kann nicht mehr angewendet werden")
+    ensure_mailbox_access(user, rule["mailbox_id"])
+    return rule
+
+
+def apply_saved_rule_to_existing(rule, user):
+    access, access_args = mailbox_filter(user, "m")
+    messages = db.rows("""SELECT m.id,m.mailbox_id,m.sender,m.recipients,m.subject,m.received_at,
+      m.text_body,m.status,m.matched_rule_id,b.name mailbox_name FROM messages m JOIN mailboxes b ON b.id=m.mailbox_id
+      WHERE (? IS NULL OR m.mailbox_id=?) AND (m.matched_rule_id IS NULL OR m.matched_rule_id<>?) AND """ + access + """
+      ORDER BY m.received_at DESC LIMIT 2000""", (rule["mailbox_id"], rule["mailbox_id"], rule["id"], *access_args))
+    matches = [m for m in messages if rule_matches(rule, m)]
+    actions = planned_rule_actions(rule)
+    samples = [{k: m[k] for k in ("id", "mailbox_id", "mailbox_name", "sender", "subject", "received_at", "status")} for m in matches[:100]]
+    dry_run = test_mode_enabled()
+    if dry_run:
+        db.audit("rule_apply_test", actor=user["email"], rule_id=rule["id"], matched=len(matches), actions=actions)
+        return {"rule_id": rule["id"], "rule_name": rule["name"], "dry_run": True, "tested": len(messages), "matched": len(matches), "applied": 0, "failed": 0, "actions": len(actions) * len(matches), "samples": samples, "failures": []}
+    applied, failures = 0, []
+    for message in matches:
+        try:
+            if rule.get("action") == "move":
+                move_message(message["id"], rule["target_folder"], user["email"], rule["id"])
+            else:
+                target = rule["target_email"] or rule["user_email"]
+                forward_message(message["id"], target, user["email"], rule["id"], rule.get("target_user_id"))
+                if rule.get("post_forward_folder"):
+                    move_message(message["id"], rule["post_forward_folder"], user["email"], rule["id"])
+            db.execute("UPDATE messages SET matched_rule_id=? WHERE id=?", (rule["id"], message["id"]))
+            applied += 1
+        except Exception as exc:
+            failures.append({"id": message["id"], "subject": message["subject"], "error": str(exc)})
+            db.audit("rule_apply_failed", actor=user["email"], message_id=message["id"], mailbox_id=message["mailbox_id"], rule_id=rule["id"], error=str(exc)[:500])
+    db.audit("rule_applied_existing", actor=user["email"], rule_id=rule["id"], matched=len(matches), applied=applied, failed=len(failures))
+    return {"rule_id": rule["id"], "rule_name": rule["name"], "dry_run": False, "tested": len(messages), "matched": len(matches), "applied": applied, "failed": len(failures), "actions": len(actions) * applied, "samples": samples, "failures": failures[:20]}
+
+
 def validate_rule_condition(payload):
     if payload.get("field") not in {"from", "to", "subject", "body"}:
         raise HTTPException(400, "Ungültiges Regelfeld")
@@ -741,42 +784,45 @@ def planned_rule_actions(rule):
 def apply_rule_to_existing(rule_id: int, session: str | None = Cookie(None)):
     """Apply one saved rule to already imported messages. In test mode this is only a dry-run."""
     user = require_user(session)
-    rule = db.row("""SELECT r.*,u.name target_name,u.email user_email FROM rules r
-      LEFT JOIN users u ON u.id=r.target_user_id WHERE r.id=?""", (rule_id,))
-    if not rule: raise HTTPException(404, "Regel nicht gefunden")
-    if not rule["active"]: raise HTTPException(409, "Nur aktive Regeln können angewendet werden")
-    if rule["mailbox_id"] is None:
-        raise HTTPException(400, "Diese alte globale Regel kann nicht mehr angewendet werden")
-    ensure_mailbox_access(user, rule["mailbox_id"])
-    access, access_args = mailbox_filter(user, "m")
-    messages = db.rows("""SELECT m.id,m.mailbox_id,m.sender,m.recipients,m.subject,m.received_at,
-      m.text_body,m.status,m.matched_rule_id,b.name mailbox_name FROM messages m JOIN mailboxes b ON b.id=m.mailbox_id
-      WHERE (? IS NULL OR m.mailbox_id=?) AND (m.matched_rule_id IS NULL OR m.matched_rule_id<>?) AND """ + access + """
-      ORDER BY m.received_at DESC LIMIT 2000""", (rule["mailbox_id"], rule["mailbox_id"], rule_id, *access_args))
-    matches = [m for m in messages if rule_matches(rule, m)]
-    actions = planned_rule_actions(rule)
-    samples = [{k: m[k] for k in ("id", "mailbox_id", "mailbox_name", "sender", "subject", "received_at", "status")} for m in matches[:100]]
-    dry_run = test_mode_enabled()
-    if dry_run:
-        db.audit("rule_apply_test", actor=user["email"], rule_id=rule_id, matched=len(matches), actions=actions)
-        return {"dry_run": True, "tested": len(messages), "matched": len(matches), "applied": 0, "failed": 0, "actions": len(actions) * len(matches), "samples": samples}
-    applied, failures = 0, []
-    for message in matches:
+    rule = get_saved_rule_for_apply(rule_id, user)
+    result = apply_saved_rule_to_existing(rule, user)
+    result.pop("rule_id", None)
+    result.pop("rule_name", None)
+    return result
+
+
+@app.post("/api/rules/apply")
+def apply_multiple_rules_to_existing(payload: dict = Body(...), session: str | None = Cookie(None)):
+    """Apply several saved rules to already imported messages. In test mode this is only a dry-run."""
+    user = require_user(session)
+    rule_ids = []
+    for value in payload.get("rule_ids", []):
         try:
-            if rule.get("action") == "move":
-                move_message(message["id"], rule["target_folder"], user["email"], rule_id)
-            else:
-                target = rule["target_email"] or rule["user_email"]
-                forward_message(message["id"], target, user["email"], rule_id, rule.get("target_user_id"))
-                if rule.get("post_forward_folder"):
-                    move_message(message["id"], rule["post_forward_folder"], user["email"], rule_id)
-            db.execute("UPDATE messages SET matched_rule_id=? WHERE id=?", (rule_id, message["id"]))
-            applied += 1
-        except Exception as exc:
-            failures.append({"id": message["id"], "subject": message["subject"], "error": str(exc)})
-            db.audit("rule_apply_failed", actor=user["email"], message_id=message["id"], mailbox_id=message["mailbox_id"], rule_id=rule_id, error=str(exc)[:500])
-    db.audit("rule_applied_existing", actor=user["email"], rule_id=rule_id, matched=len(matches), applied=applied, failed=len(failures))
-    return {"dry_run": False, "tested": len(messages), "matched": len(matches), "applied": applied, "failed": len(failures), "actions": len(actions) * applied, "samples": samples, "failures": failures[:20]}
+            rule_id = int(value)
+        except (TypeError, ValueError):
+            continue
+        if rule_id not in rule_ids:
+            rule_ids.append(rule_id)
+    if not rule_ids:
+        raise HTTPException(400, "Keine Regeln ausgewählt")
+    if len(rule_ids) > 50:
+        raise HTTPException(400, "Maximal 50 Regeln gleichzeitig anwenden")
+    results, errors = [], []
+    for rule_id in rule_ids:
+        try:
+            rule = get_saved_rule_for_apply(rule_id, user)
+            results.append(apply_saved_rule_to_existing(rule, user))
+        except HTTPException as exc:
+            errors.append({"rule_id": rule_id, "error": str(exc.detail)})
+    totals = {
+        "dry_run": test_mode_enabled(),
+        "requested": len(rule_ids), "processed": len(results), "errors": len(errors),
+        "tested": sum(r["tested"] for r in results), "matched": sum(r["matched"] for r in results),
+        "applied": sum(r["applied"] for r in results), "failed": sum(r["failed"] for r in results),
+        "actions": sum(r["actions"] for r in results),
+    }
+    db.audit("rules_batch_applied_existing", actor=user["email"], rule_ids=rule_ids, **totals)
+    return {**totals, "results": results, "error_details": errors}
 
 
 @app.post("/api/rules")
@@ -788,6 +834,21 @@ def add_rule(payload: dict = Body(...), session: str | None = Cookie(None)):
       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,1,?,?)""", (rule["name"], rule["mailbox_id"], rule["field"], rule["operator"], rule["value"], rule["value_logic"], rule["action"], rule["target_user_id"], rule["target_email"], rule["target_folder"], rule["post_forward_folder"], rule["priority"], rule["stop_processing"], db.now_iso()))
     db.audit("rule_created", actor=user["email"], rule_id=rule_id, name=rule["name"])
     return {"id": rule_id}
+
+
+@app.post("/api/rules/{rule_id}/copy")
+def copy_rule(rule_id: int, session: str | None = Cookie(None)):
+    user = require_user(session)
+    current = db.row("SELECT * FROM rules WHERE id=?", (rule_id,))
+    if not current: raise HTTPException(404, "Regel nicht gefunden")
+    if current["mailbox_id"] is None:
+        raise HTTPException(400, "Diese alte globale Regel kann nicht mehr kopiert werden")
+    ensure_mailbox_access(user, current["mailbox_id"])
+    new_name = f"Kopie von {current['name']}"[:120]
+    new_id = db.execute("""INSERT INTO rules(name,mailbox_id,field,operator,value,value_logic,action,target_user_id,target_email,target_folder,post_forward_folder,priority,active,stop_processing,created_at)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,0,?,?)""", (new_name, current["mailbox_id"], current["field"], current["operator"], current["value"], current.get("value_logic") or "any", current["action"], current["target_user_id"], current["target_email"], current["target_folder"], current["post_forward_folder"], current["priority"], current["stop_processing"], db.now_iso()))
+    db.audit("rule_copied", actor=user["email"], rule_id=rule_id, copied_rule_id=new_id, name=new_name)
+    return {"id": new_id, "name": new_name, "active": False}
 
 
 @app.put("/api/rules/{rule_id}")
